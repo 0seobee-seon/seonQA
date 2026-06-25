@@ -10,19 +10,44 @@ type Message = {
   quickReplies?: string[];
 };
 
+// 검색에서 제외할 일반 단어
+const STOPWORDS = new Set([
+  "찾아줘", "알려줘", "알려", "어떻게", "무엇", "뭐", "해줘", "해주세요",
+  "방법", "절차", "있나요", "인가요", "입니까", "알고싶어", "궁금",
+]);
+
 function findAnswer(input: string) {
-  const tokens = input.trim().split(/\s+/);
+  const tokens = input
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
+
+  if (tokens.length === 0) return null;
+
   const scored = faqs.map((faq) => {
     let score = 0;
     tokens.forEach((t) => {
-      if (faq.question.includes(t)) score += 3;
-      if (faq.keywords.some((k) => k.includes(t) || t.includes(k))) score += 2;
+      // 질문에 포함: 높은 점수
+      if (faq.question.includes(t)) score += 4;
+      // 키워드 정확 일치 또는 3자 이상일 때만 부분 일치 허용
+      if (
+        faq.keywords.some(
+          (k) =>
+            k === t ||
+            (k.length >= 3 && t.includes(k)) ||
+            (t.length >= 3 && k.includes(t))
+        )
+      )
+        score += 2;
+      // 답변 본문 포함
       if (faq.answer.includes(t)) score += 1;
     });
     return { faq, score };
   });
+
   const best = scored.sort((a, b) => b.score - a.score)[0];
-  return best.score > 0 ? best.faq : null;
+  // 최소 점수 4 이상(질문 직접 매칭 수준)이어야 답변 반환
+  return best.score >= 4 ? best.faq : null;
 }
 
 function renderBotText(text: string) {
