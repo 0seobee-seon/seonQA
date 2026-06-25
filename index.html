@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>총무팀 업무 안내 챗봇</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="chat-wrapper">
+    <header class="chat-header">
+      <div class="header-icon">💼</div>
+      <div>
+        <div class="header-title">총무팀 업무 안내</div>
+        <div class="header-sub">업무 관련 질문을 입력해 주세요</div>
+      </div>
+    </header>
+
+    <div class="quick-buttons" id="quickButtons">
+      <button class="quick-btn" data-q="연차 신청 방법을 알려주세요">연차/휴가 신청</button>
+      <button class="quick-btn" data-q="그룹웨어 비밀번호를 재설정하고 싶어요">그룹웨어 비밀번호 재설정</button>
+      <button class="quick-btn" data-q="사내 전화번호를 확인하고 싶어요">사내 전화번호 확인</button>
+      <button class="quick-btn" data-q="복무규정에서 연차 일수가 어떻게 되나요">복무규정 확인</button>
+      <button class="quick-btn" data-q="취업규칙에서 근무시간이 어떻게 되나요">취업규칙 확인</button>
+    </div>
+
+    <div class="chat-messages" id="chatMessages">
+      <div class="message bot">
+        <div class="bubble">
+          안녕하세요! 총무팀 업무 안내 챗봇입니다. 😊<br>
+          궁금한 업무 절차를 질문해 주시면 안내해 드릴게요.<br>
+          위의 버튼을 눌러도 됩니다.
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-input-area">
+      <input
+        type="text"
+        id="userInput"
+        class="chat-input"
+        placeholder="질문을 입력하세요..."
+        maxlength="200"
+        autocomplete="off"
+      />
+      <button class="send-btn" id="sendBtn">전송</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

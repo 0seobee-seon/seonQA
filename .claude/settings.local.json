@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\LG\\\\Desktop\\\\AX 코드 학습\\\\챗봇 만들기\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object FullName, Length)",
+      "PowerShell(node --version)",
+      "PowerShell(npm --version)",
+      "PowerShell($body = [System.Text.Encoding]::UTF8.GetBytes\\('{\"question\":\"연차 신청 방법 알려줘\"}'\\); $req = [System.Net.WebRequest]::Create\\(\"http://localhost:3000/api/chat\"\\); $req.Method = \"POST\"; $req.ContentType = \"application/json; charset=utf-8\"; $req.ContentLength = $body.Length; $stream = $req.GetRequestStream\\(\\); $stream.Write\\($body, 0, $body.Length\\); $stream.Close\\(\\); $resp = $req.GetResponse\\(\\); $reader = New-Object System.IO.StreamReader\\($resp.GetResponseStream\\(\\), [System.Text.Encoding]::UTF8\\); $reader.ReadToEnd\\(\\))",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(ls \"C:\\\\Users\\\\LG\\\\AppData\\\\Roaming\\\\Claude\\\\local-agent-mode-sessions\\\\skills-plugin\\\\2ca6db06-56e8-495a-b868-0926c6a4a926\\\\4b379818-8b02-4fb5-ab18-211a0c0ffa61\\\\skills\\\\docx\")",
+      "Bash(npm list *)",
+      "Bash(npm install *)",
+      "PowerShell(\\(Get-Item \"C:\\\\Users\\\\LG\\\\Desktop\\\\AX 코드 학습\\\\챗봇 만들기\\\\과제제출_총무팀챗봇_김영섭.docx\"\\).Length)"
+    ]
+  }
+}
