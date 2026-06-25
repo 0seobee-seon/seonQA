@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { faqs, categories } from "./data/faq";
+import { categories } from "./data/faq";
 
 type Message = {
   id: number;
@@ -10,44 +10,17 @@ type Message = {
   quickReplies?: string[];
 };
 
-// 검색에서 제외할 일반 단어
-const STOPWORDS = new Set([
-  "찾아줘", "알려줘", "알려", "어떻게", "무엇", "뭐", "해줘", "해주세요",
-  "방법", "절차", "있나요", "인가요", "입니까", "알고싶어", "궁금",
-]);
-
-function findAnswer(input: string) {
-  const tokens = input
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
-
-  if (tokens.length === 0) return null;
-
-  const scored = faqs.map((faq) => {
-    let score = 0;
-    tokens.forEach((t) => {
-      // 질문에 포함: 높은 점수
-      if (faq.question.includes(t)) score += 4;
-      // 키워드 정확 일치 또는 3자 이상일 때만 부분 일치 허용
-      if (
-        faq.keywords.some(
-          (k) =>
-            k === t ||
-            (k.length >= 3 && t.includes(k)) ||
-            (t.length >= 3 && k.includes(t))
-        )
-      )
-        score += 2;
-      // 답변 본문 포함
-      if (faq.answer.includes(t)) score += 1;
+async function searchDocuments(question: string): Promise<{ answer: string | null; source?: string }> {
+  try {
+    const res = await fetch("/api/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
     });
-    return { faq, score };
-  });
-
-  const best = scored.sort((a, b) => b.score - a.score)[0];
-  // 최소 점수 4 이상(질문 직접 매칭 수준)이어야 답변 반환
-  return best.score >= 4 ? best.faq : null;
+    return await res.json();
+  } catch {
+    return { answer: null };
+  }
 }
 
 function renderBotText(text: string) {
@@ -85,6 +58,14 @@ const WELCOME: Message = {
   quickReplies: categories.map((c) => `${c.icon} ${c.label}`),
 };
 
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  "인사·급여": ["연차", "급여", "휴가", "인사", "퇴직", "입사"],
+  "사내규정": ["규정", "복무", "취업규칙", "상조"],
+  "사내전화": ["전화", "내선", "번호"],
+  "그룹웨어": ["그룹웨어", "비밀번호", "로그인", "전자결재"],
+  "양식·서류": ["양식", "서류", "신청서", "사직", "차용"],
+};
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([WELCOME]);
   const [input, setInput] = useState("");
@@ -100,39 +81,50 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, { ...msg, id: nextId.current++ }]);
   }
 
-  function handleUserInput(text: string) {
+  async function handleUserInput(text: string) {
     const cleaned = text.replace(/^[^\w가-힣]+/, "").trim();
     addMessage({ role: "user", text });
 
-    setTimeout(() => {
-      // 카테고리 선택인지 확인
-      const cat = categories.find((c) => text.includes(c.label));
-      if (cat) {
-        const list = faqs.filter((f) => f.category === cat.id);
+    // 카테고리 선택인지 확인
+    const cat = categories.find((c) => text.includes(c.label));
+    if (cat) {
+      const catKws = CATEGORY_KEYWORDS[cat.label] || [];
+      const hint = catKws.length > 0 ? catKws.join(", ") : cat.label;
+      setTimeout(() => {
         addMessage({
           role: "bot",
-          text: `**${cat.icon} ${cat.label}** 관련 질문 목록입니다.\n원하시는 항목을 선택해 주세요.`,
-          quickReplies: list.map((f) => f.question),
+          text: `**${cat.icon} ${cat.label}** 관련 내용을 검색해 드릴게요.\n키워드를 직접 입력해 주세요.\n예) ${hint}`,
+          quickReplies: catKws.slice(0, 4),
         });
-        return;
-      }
+      }, 300);
+      return;
+    }
 
-      // 키워드 매칭
-      const found = findAnswer(cleaned);
-      if (found) {
-        addMessage({
-          role: "bot",
-          text: `**${found.question}**\n\n${found.answer}\n\n담당자: ${found.contact.name} (${found.contact.phone})`,
-          quickReplies: ["다른 질문하기", "카테고리 보기"],
-        });
-      } else {
-        addMessage({
-          role: "bot",
-          text: "죄송합니다. 해당 내용을 찾지 못했어요. 😅\n다른 키워드로 다시 시도하거나 총무팀에 직접 문의해 주세요.",
-          quickReplies: ["카테고리 보기", "총무팀 전화"],
-        });
-      }
-    }, 400);
+    // 로딩 메시지
+    const loadingId = nextId.current++;
+    setMessages((prev) => [
+      ...prev,
+      { id: loadingId, role: "bot", text: "🔍 검색 중..." },
+    ]);
+
+    // Supabase 문서 검색
+    const result = await searchDocuments(cleaned);
+
+    setMessages((prev) => prev.filter((m) => m.id !== loadingId));
+
+    if (result.answer) {
+      addMessage({
+        role: "bot",
+        text: `**📄 ${result.source ?? "문서"}**\n\n${result.answer}`,
+        quickReplies: ["다른 질문하기", "카테고리 보기"],
+      });
+    } else {
+      addMessage({
+        role: "bot",
+        text: "죄송합니다. 해당 내용을 찾지 못했어요. 😅\n다른 키워드로 다시 시도하거나 총무팀에 직접 문의해 주세요.",
+        quickReplies: ["카테고리 보기", "총무팀 전화"],
+      });
+    }
   }
 
   function handleQuickReply(reply: string) {
