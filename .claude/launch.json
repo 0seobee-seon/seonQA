@@ -5,7 +5,7 @@
       "name": "챗봇 서버",
       "runtimeExecutable": "node",
       "runtimeArgs": ["server.js"],
-      "port": 3001,
+      "port": 3027,
       "autoPort": false
     }
   ]

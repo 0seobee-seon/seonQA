@@ -1,4 +1,27 @@
 const { loadDocuments } = require("../utils/fileReader");
+const path = require("path");
+const fs = require("fs");
+
+// 사내전화 JSON 직접 검색
+function searchPhone(question) {
+  try {
+    const jsonPath = path.join(__dirname, "../database/phone_directory.json");
+    const directory = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    const q = question.replace(/\s/g, "");
+    const results = directory.filter((p) =>
+      q.includes(p.name) || q.includes(p.dept) || q.includes(p.ext)
+    );
+    if (results.length === 0) return null;
+    const lines = results.map(
+      (p) => `${p.name} ${p.title || ""} — ${p.ext} (${p.dept}, ${p.location})`
+    );
+    return lines.join("\n");
+  } catch {
+    return null;
+  }
+}
+
+const PHONE_KEYWORDS = ["전화", "번호", "내선", "연락처", "사내전화"];
 
 const FALLBACK_MESSAGE =
   "죄송합니다. 해당 내용은 현재 업무 가이드에서 찾을 수 없습니다.\n\n" +
@@ -15,20 +38,33 @@ async function getDocs() {
 
 function findMatches(question, docs) {
   const q = question.toLowerCase();
-  return docs.filter((d) => {
-    // 1단계: 파일명 키워드가 질문에 포함되면 바로 선택
-    if (d.keywords.some((kw) => q.includes(kw.toLowerCase()))) return true;
+  const qWords = (q.match(/[가-힣a-zA-Z0-9]{2,}/g) || []);
 
-    // 2단계: 질문 단어(이름 등)가 문서 본문에 존재하면 선택
-    // hwpx 한글 글자 사이 공백 제거 후 검색
-    const docKws = new Set(d.keywords.map((k) => k.toLowerCase()));
-    const qWords = (q.match(/[가-힣a-zA-Z0-9]{2,}/g) || []).filter(
-      (w) => !docKws.has(w)
-    );
-    if (qWords.length === 0) return false;
+  const scored = docs.map((d) => {
+    const docKws = d.keywords.map((k) => k.toLowerCase());
     const normalized = d.content.replace(/([가-힣])\s+(?=[가-힣])/g, "$1");
-    return qWords.some((w) => normalized.includes(w));
-  });
+    let score = 0;
+
+    for (const w of qWords) {
+      // 파일명 키워드 직접 일치: 가장 높은 점수
+      if (docKws.some((kw) => kw.includes(w) || w.includes(kw))) score += 10;
+      // 본문 포함: 낮은 점수
+      if (normalized.includes(w)) score += 1;
+    }
+
+    return { doc: d, score };
+  }).filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) return [];
+
+  // 최고 점수 문서 1개만 반환 (키워드 매치 우선, 본문 매치 보조)
+  const best = scored[0].score;
+  const threshold = best >= 10 ? best - 2 : best; // 키워드 매치가 있으면 엄격하게, 없으면 최고점만
+  return scored
+    .filter(({ score }) => score >= threshold)
+    .slice(0, 1)
+    .map(({ doc }) => doc);
 }
 
 // 질문 키워드가 등장하는 주변 텍스트만 발췌 (최대 5곳)
@@ -44,23 +80,24 @@ function extractSnippet(question, content, docKeywords) {
   // hwpx 파싱 부산물: 한글 글자 사이 공백 제거 ("김 영 섭" → "김영섭")
   const normalized = content.replace(/([가-힣])\s+(?=[가-힣])/g, "$1");
 
-  const seen = new Set();
+  const usedRanges = [];
   const snippets = [];
 
   for (const word of words) {
     let idx = 0;
     while ((idx = normalized.indexOf(word, idx)) !== -1) {
-      const start = Math.max(0, idx - 40);
-      const end = Math.min(normalized.length, idx + 80);
-      const snippet = normalized.slice(start, end).trim();
-      if (!seen.has(snippet)) {
-        seen.add(snippet);
-        snippets.push(snippet);
+      const start = Math.max(0, idx - 8);
+      const end = Math.min(normalized.length, idx + 8);
+      // 이미 추출한 범위와 50자 이상 겹치면 건너뜀
+      const overlap = usedRanges.some(([s, e]) => Math.min(end, e) - Math.max(start, s) > 50);
+      if (!overlap) {
+        usedRanges.push([start, end]);
+        snippets.push(normalized.slice(start, end).trim());
       }
       idx += word.length;
-      if (snippets.length >= 5) break;
+      if (snippets.length >= 2) break;
     }
-    if (snippets.length >= 5) break;
+    if (snippets.length >= 2) break;
   }
 
   if (snippets.length === 0) return normalized.slice(0, 300);
@@ -82,6 +119,20 @@ async function handleChat(req, res) {
       if (!question || question.trim() === "") {
         res.writeHead(400, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ error: "질문을 입력해 주세요." }));
+      }
+
+      // 전화번호 질문 → JSON 직접 조회 (hwpx보다 정확)
+      const isPhoneQuery = PHONE_KEYWORDS.some((kw) => question.includes(kw));
+      if (isPhoneQuery) {
+        const phoneAnswer = searchPhone(question);
+        if (phoneAnswer) {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          return res.end(JSON.stringify({
+            answer: phoneAnswer,
+            source: "phone_directory.json",
+            fallback: false,
+          }));
+        }
       }
 
       const docs = await getDocs();
