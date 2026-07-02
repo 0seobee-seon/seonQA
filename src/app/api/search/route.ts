@@ -152,8 +152,47 @@ export async function POST(req: NextRequest) {
   const best = scored[0];
   const snippet = extractSnippet(tokens, best.content || "");
 
+  // --- Gemini 답변 생성 ---
+  let answer = snippet;
+
+  if (process.env.GOOGLE_AI_API_KEY && snippet) {
+    try {
+      const prompt = `당신은 선엔지니어링 총무팀 업무 안내 AI입니다.
+아래 사내 문서 내용을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
+
+[문서: ${best.filename}]
+${snippet}
+
+[직원 질문]
+${question}
+
+답변 시 주의사항:
+- 문서에 없는 내용은 추측하지 말 것
+- 핵심 정보를 간결하게 요약할 것
+- 자연스러운 구어체 한국어로 작성할 것
+- 마크다운 형식(볼드, 목록 등) 사용 가능`;
+
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.3, maxOutputTokens: 800 },
+          }),
+        }
+      );
+      const geminiData = await geminiRes.json();
+      const generated = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (generated) answer = generated;
+    } catch (e) {
+      console.warn("Gemini 답변 생성 실패, 원문 발췌로 fallback:", e);
+    }
+  }
+
   return NextResponse.json({
-    answer: snippet,
+    answer,
     source: best.filename,
     category: best.category,
     score: best.hybrid,
