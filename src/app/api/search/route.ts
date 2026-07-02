@@ -173,7 +173,7 @@ ${question}
 - 마크다운 형식(볼드, 목록 등) 사용 가능`;
 
       const geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
