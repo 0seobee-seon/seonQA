@@ -184,17 +184,30 @@ export async function POST(req: NextRequest) {
 
   // 상위 3개 문서를 컨텍스트로 활용 (일관된 종합 답변)
   const topDocs = scored.slice(0, 3);
+
+  // "누구" 계열 질문이면 각부서업무담당자 문서를 강제로 컨텍스트에 포함
+  const isPersonQuery = /누구|담당자|담당은|담당이|누가/.test(question);
+  if (isPersonQuery) {
+    const buseoDoc = scored.find(
+      (d) => d.filename.includes("각부서업무담당자") && !topDocs.some((t) => t.id === d.id)
+    );
+    if (buseoDoc) topDocs[topDocs.length - 1] = buseoDoc;
+  }
+
   const contextBlocks = topDocs.map((doc) => {
     const raw = doc.content || "";
-    // 각 문서당 최대 600자로 제한 (컨텍스트 과부하 방지)
+    // 각부서업무담당자 문서는 전체 내용 전달 (담당자 정보 누락 방지)
+    if (doc.filename.includes("각부서업무담당자")) return `[문서: ${doc.filename}]\n${raw}`;
     const snippet = raw.length <= 600 ? raw : extractSnippet(tokens, raw).slice(0, 600);
     return `[문서: ${doc.filename}]\n${snippet}`;
   }).join("\n\n---\n\n");
 
-  const fallbackSnippet = (() => {
-    const raw = best.content || "";
-    return raw.length <= 1500 ? raw : extractSnippet(tokens, raw);
-  })();
+  // fallback: 담당자 질문이면 각부서업무담당자 문서 내용을, 아니면 best 문서 발췌
+  const fallbackDoc = isPersonQuery
+    ? (topDocs.find((d) => d.filename.includes("각부서업무담당자")) ?? best)
+    : best;
+  const fallbackRaw = fallbackDoc.content || "";
+  const fallbackSnippet = fallbackRaw.length <= 1500 ? fallbackRaw : extractSnippet(tokens, fallbackRaw);
   let answer = fallbackSnippet;
 
   if (process.env.GOOGLE_AI_API_KEY && contextBlocks) {
