@@ -7,10 +7,8 @@ const STOPWORDS = new Set([
   "어디", "언제", "누가", "왜", "어느", "입니다", "입니까", "하나요",
 ]);
 
-// 하이브리드 점수 가중치
 const KEYWORD_WEIGHT = 0.4;
 const VECTOR_WEIGHT = 0.6;
-// 키워드 점수 정규화 기준 (이 이상은 최대값으로 클리핑)
 const KEYWORD_SCORE_CAP = 20;
 
 function normalize(text: string) {
@@ -58,6 +56,38 @@ function extractSnippet(tokens: string[], content: string): string {
   return snippets.length > 0 ? snippets.join("\n...\n") : norm.slice(0, 300);
 }
 
+async function logQuery(
+  supabaseUrl: string,
+  supabaseKey: string,
+  payload: {
+    question: string;
+    answer: string | null;
+    source_filename?: string;
+    source_category?: string;
+    score?: number;
+    search_mode?: string;
+    was_answered: boolean;
+  }
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/query_logs`, {
+      method: "POST",
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data[0]?.id as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const { question } = await req.json();
 
@@ -75,17 +105,17 @@ export async function POST(req: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
 
-  // 키워드 검색용 전체 문서 조회
   const { data: docs, error } = await supabase
     .from("documents")
     .select("id, filename, category, content");
 
   if (error || !docs || docs.length === 0) {
-    return NextResponse.json({ answer: null, error: error?.message });
+    const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { question: question.trim(), answer: null, was_answered: false });
+    return NextResponse.json({ answer: null, log_id, error: error?.message });
   }
 
-  // --- 벡터 검색 (Google AI API 키가 있는 경우만) ---
-  const vectorScoreMap = new Map<string, number>(); // id → similarity
+  // --- 벡터 검색 ---
+  const vectorScoreMap = new Map<string, number>();
 
   if (process.env.GOOGLE_AI_API_KEY) {
     try {
@@ -117,14 +147,12 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (e) {
-      // 벡터 검색 실패 시 키워드 검색으로 fallback
       console.warn("Vector search failed, falling back to keyword only:", e);
     }
   }
 
   const hasVectorResults = vectorScoreMap.size > 0;
 
-  // --- 하이브리드 점수 계산 ---
   const scored = docs
     .map((doc) => {
       const kScore = keywordScore(tokens, doc.filename, doc.content || "");
@@ -132,11 +160,9 @@ export async function POST(req: NextRequest) {
 
       let hybrid: number;
       if (hasVectorResults) {
-        // 키워드 점수 0~1 정규화 후 가중 합산
         const kNorm = Math.min(kScore, KEYWORD_SCORE_CAP) / KEYWORD_SCORE_CAP;
         hybrid = kNorm * KEYWORD_WEIGHT + vScore * VECTOR_WEIGHT;
       } else {
-        // 벡터 없으면 키워드 점수만 사용
         hybrid = kScore;
       }
 
@@ -146,13 +172,17 @@ export async function POST(req: NextRequest) {
     .sort((a, b) => b.hybrid - a.hybrid);
 
   if (scored.length === 0) {
-    return NextResponse.json({ answer: null });
+    const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { question: question.trim(), answer: null, was_answered: false });
+    return NextResponse.json({ answer: null, log_id });
   }
 
   const best = scored[0];
   const snippet = extractSnippet(tokens, best.content || "");
 
-  // --- Gemini 답변 생성 ---
+  // 점수가 낮으면 미응답으로 분류
+  const LOW_SCORE_THRESHOLD = hasVectorResults ? 0.12 : 3;
+  const wasAnswered = best.hybrid >= LOW_SCORE_THRESHOLD;
+
   let answer = snippet;
 
   if (process.env.GOOGLE_AI_API_KEY && snippet) {
@@ -191,11 +221,22 @@ ${question}
     }
   }
 
+  const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    question: question.trim(),
+    answer,
+    source_filename: best.filename,
+    source_category: best.category,
+    score: best.hybrid,
+    search_mode: hasVectorResults ? "hybrid" : "keyword",
+    was_answered: wasAnswered,
+  });
+
   return NextResponse.json({
     answer,
     source: best.filename,
     category: best.category,
     score: best.hybrid,
     searchMode: hasVectorResults ? "hybrid" : "keyword",
+    log_id,
   });
 }
