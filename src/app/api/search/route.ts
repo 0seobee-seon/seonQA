@@ -177,34 +177,45 @@ export async function POST(req: NextRequest) {
   }
 
   const best = scored[0];
-  const rawContent = best.content || "";
-  // 내용이 짧으면 전체를, 길면 토큰 기준 발췌
-  const snippet = rawContent.length <= 1500 ? rawContent : extractSnippet(tokens, rawContent);
 
   // 점수가 낮으면 미응답으로 분류
   const LOW_SCORE_THRESHOLD = hasVectorResults ? 0.12 : 3;
   const wasAnswered = best.hybrid >= LOW_SCORE_THRESHOLD;
 
-  let answer = snippet;
+  // 상위 3개 문서를 컨텍스트로 활용 (일관된 종합 답변)
+  const topDocs = scored.slice(0, 3);
+  const contextBlocks = topDocs.map((doc) => {
+    const raw = doc.content || "";
+    // 각 문서당 최대 600자로 제한 (컨텍스트 과부하 방지)
+    const snippet = raw.length <= 600 ? raw : extractSnippet(tokens, raw).slice(0, 600);
+    return `[문서: ${doc.filename}]\n${snippet}`;
+  }).join("\n\n---\n\n");
 
-  if (process.env.GOOGLE_AI_API_KEY && snippet) {
+  const fallbackSnippet = (() => {
+    const raw = best.content || "";
+    return raw.length <= 1500 ? raw : extractSnippet(tokens, raw);
+  })();
+  let answer = fallbackSnippet;
+
+  if (process.env.GOOGLE_AI_API_KEY && contextBlocks) {
     try {
       const prompt = `당신은 선엔지니어링 총무팀 업무 안내 AI입니다.
-아래 사내 문서 내용을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
+아래 사내 문서들을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
 
-[문서: ${best.filename}]
-${snippet}
+${contextBlocks}
 
 [직원 질문]
 ${question}
 
 답변 시 주의사항:
-- 문서에 있는 절차, 담당자, 주의사항, 링크 등 모든 세부 정보를 빠짐없이 포함할 것
+- 여러 문서의 내용을 종합하여 일관되고 완전한 답변을 작성할 것
+- 담당자, 절차, 주의사항, 링크 등 모든 세부 정보를 빠짐없이 포함할 것
 - 단계별 절차가 있으면 순서대로 모두 안내할 것
 - 문서에 없는 내용은 추측하지 말 것
 - 자연스러운 구어체 한국어로 작성할 것
 - 마크다운 형식(볼드, 목록 등) 사용 가능`;
 
+      console.log(`[Gemini] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
       const geminiRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
         {
@@ -212,15 +223,20 @@ ${question}
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.3, maxOutputTokens: 800 },
+            generationConfig: { temperature: 0.3, maxOutputTokens: 1000 },
           }),
         }
       );
       const geminiData = await geminiRes.json();
       const generated = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (generated) answer = generated;
+      if (generated) {
+        console.log(`[Gemini] 답변 생성 성공 (${generated.length}자)`);
+        answer = generated;
+      } else {
+        console.error("[Gemini] 답변 생성 실패:", JSON.stringify(geminiData).slice(0, 300));
+      }
     } catch (e) {
-      console.warn("Gemini 답변 생성 실패, 원문 발췌로 fallback:", e);
+      console.error("Gemini 답변 생성 실패, 원문 발췌로 fallback:", e);
     }
   }
 
