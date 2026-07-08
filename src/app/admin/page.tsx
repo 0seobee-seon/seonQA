@@ -528,7 +528,7 @@ export default function AdminPage() {
               value={pw}
               onChange={(e) => setPw(e.target.value)}
               placeholder="관리자 비밀번호"
-              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400"
+              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-black outline-none focus:ring-2 focus:ring-blue-400"
             />
             {error && <p className="text-xs text-red-500">{error}</p>}
             <button
