@@ -177,7 +177,9 @@ export async function POST(req: NextRequest) {
   }
 
   const best = scored[0];
-  const snippet = extractSnippet(tokens, best.content || "");
+  const rawContent = best.content || "";
+  // 내용이 짧으면 전체를, 길면 토큰 기준 발췌
+  const snippet = rawContent.length <= 1500 ? rawContent : extractSnippet(tokens, rawContent);
 
   // 점수가 낮으면 미응답으로 분류
   const LOW_SCORE_THRESHOLD = hasVectorResults ? 0.12 : 3;
@@ -197,8 +199,9 @@ ${snippet}
 ${question}
 
 답변 시 주의사항:
+- 문서에 있는 절차, 담당자, 주의사항, 링크 등 모든 세부 정보를 빠짐없이 포함할 것
+- 단계별 절차가 있으면 순서대로 모두 안내할 것
 - 문서에 없는 내용은 추측하지 말 것
-- 핵심 정보를 간결하게 요약할 것
 - 자연스러운 구어체 한국어로 작성할 것
 - 마크다운 형식(볼드, 목록 등) 사용 가능`;
 
