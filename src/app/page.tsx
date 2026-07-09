@@ -8,9 +8,11 @@ type Message = {
   role: "bot" | "user";
   text: string;
   quickReplies?: string[];
+  log_id?: string;
+  feedbackSent?: boolean;
 };
 
-async function searchDocuments(question: string): Promise<{ answer: string | null; source?: string }> {
+async function searchDocuments(question: string): Promise<{ answer: string | null; source?: string; log_id?: string }> {
   try {
     const res = await fetch("/api/search", {
       method: "POST",
@@ -21,6 +23,14 @@ async function searchDocuments(question: string): Promise<{ answer: string | nul
   } catch {
     return { answer: null };
   }
+}
+
+async function sendFeedback(log_id: string, feedback: 1 | -1) {
+  await fetch("/api/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ log_id, feedback }),
+  });
 }
 
 function renderBotText(text: string) {
@@ -71,7 +81,7 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  let nextId = useRef(1);
+  const nextId = useRef(1);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -81,11 +91,14 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, { ...msg, id: nextId.current++ }]);
   }
 
+  function markFeedback(msgId: number) {
+    setMessages((prev) => prev.map((m) => m.id === msgId ? { ...m, feedbackSent: true } : m));
+  }
+
   async function handleUserInput(text: string) {
     const cleaned = text.replace(/^[^\w가-힣]+/, "").trim();
     addMessage({ role: "user", text });
 
-    // 카테고리 선택인지 확인
     const cat = categories.find((c) => text.includes(c.label));
     if (cat) {
       const catKws = CATEGORY_KEYWORDS[cat.label] || [];
@@ -100,16 +113,13 @@ export default function ChatPage() {
       return;
     }
 
-    // 로딩 메시지
     const loadingId = nextId.current++;
     setMessages((prev) => [
       ...prev,
       { id: loadingId, role: "bot", text: "🔍 검색 중..." },
     ]);
 
-    // Supabase 문서 검색
     const result = await searchDocuments(cleaned);
-
     setMessages((prev) => prev.filter((m) => m.id !== loadingId));
 
     if (result.answer) {
@@ -117,12 +127,14 @@ export default function ChatPage() {
         role: "bot",
         text: `**📄 ${result.source ?? "문서"}**\n\n${result.answer}`,
         quickReplies: ["다른 질문하기", "카테고리 보기"],
+        log_id: result.log_id,
       });
     } else {
       addMessage({
         role: "bot",
         text: "죄송합니다. 해당 내용을 찾지 못했어요. 😅\n다른 키워드로 다시 시도하거나 총무팀에 직접 문의해 주세요.",
         quickReplies: ["카테고리 보기", "총무팀 전화"],
+        log_id: result.log_id,
       });
     }
   }
@@ -159,7 +171,7 @@ export default function ChatPage() {
       {/* 헤더 */}
       <header className="bg-blue-700 text-white px-4 py-4 flex items-center gap-3 shadow shrink-0">
         <div className="w-9 h-9 rounded-full bg-blue-500 flex items-center justify-center text-lg">🤖</div>
-        <div>
+        <div className="flex-1">
           <h1 className="text-base font-bold leading-tight">선엔지니어링 Q&A</h1>
           <p className="text-xs text-blue-200">청주 총무팀 업무 도우미</p>
         </div>
@@ -179,6 +191,39 @@ export default function ChatPage() {
             >
               {msg.role === "bot" ? renderBotText(msg.text) : <p>{msg.text}</p>}
             </div>
+
+            {/* 피드백 버튼 (봇 답변 + log_id 있을 때만) */}
+            {msg.role === "bot" && msg.log_id && (
+              <div className="flex items-center gap-1 mt-1.5 ml-1">
+                {msg.feedbackSent ? (
+                  <span className="text-xs text-gray-400">피드백 감사합니다</span>
+                ) : (
+                  <>
+                    <span className="text-xs text-gray-400 mr-1">도움이 됐나요?</span>
+                    <button
+                      onClick={async () => {
+                        await sendFeedback(msg.log_id!, 1);
+                        markFeedback(msg.id);
+                      }}
+                      className="text-base px-1.5 py-0.5 rounded hover:bg-green-50 transition-colors"
+                      title="도움됨"
+                    >
+                      👍
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await sendFeedback(msg.log_id!, -1);
+                        markFeedback(msg.id);
+                      }}
+                      className="text-base px-1.5 py-0.5 rounded hover:bg-red-50 transition-colors"
+                      title="도움안됨"
+                    >
+                      👎
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* 빠른 답변 버튼 */}
             {msg.role === "bot" && msg.quickReplies && (
@@ -210,7 +255,7 @@ export default function ChatPage() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="질문을 입력하세요..."
-          className="flex-1 bg-gray-100 rounded-full px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-400"
+          className="flex-1 bg-gray-100 rounded-full px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-400"
         />
         <button
           type="submit"

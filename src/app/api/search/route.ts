@@ -7,10 +7,8 @@ const STOPWORDS = new Set([
   "어디", "언제", "누가", "왜", "어느", "입니다", "입니까", "하나요",
 ]);
 
-// 하이브리드 점수 가중치
 const KEYWORD_WEIGHT = 0.4;
 const VECTOR_WEIGHT = 0.6;
-// 키워드 점수 정규화 기준 (이 이상은 최대값으로 클리핑)
 const KEYWORD_SCORE_CAP = 20;
 
 function normalize(text: string) {
@@ -58,6 +56,38 @@ function extractSnippet(tokens: string[], content: string): string {
   return snippets.length > 0 ? snippets.join("\n...\n") : norm.slice(0, 300);
 }
 
+async function logQuery(
+  supabaseUrl: string,
+  supabaseKey: string,
+  payload: {
+    question: string;
+    answer: string | null;
+    source_filename?: string;
+    source_category?: string;
+    score?: number;
+    search_mode?: string;
+    was_answered: boolean;
+  }
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/query_logs`, {
+      method: "POST",
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data[0]?.id as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const { question } = await req.json();
 
@@ -75,17 +105,17 @@ export async function POST(req: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
 
-  // 키워드 검색용 전체 문서 조회
   const { data: docs, error } = await supabase
     .from("documents")
     .select("id, filename, category, content");
 
   if (error || !docs || docs.length === 0) {
-    return NextResponse.json({ answer: null, error: error?.message });
+    const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { question: question.trim(), answer: null, was_answered: false });
+    return NextResponse.json({ answer: null, log_id, error: error?.message });
   }
 
-  // --- 벡터 검색 (Google AI API 키가 있는 경우만) ---
-  const vectorScoreMap = new Map<string, number>(); // id → similarity
+  // --- 벡터 검색 ---
+  const vectorScoreMap = new Map<string, number>();
 
   if (process.env.GOOGLE_AI_API_KEY) {
     try {
@@ -117,14 +147,12 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (e) {
-      // 벡터 검색 실패 시 키워드 검색으로 fallback
       console.warn("Vector search failed, falling back to keyword only:", e);
     }
   }
 
   const hasVectorResults = vectorScoreMap.size > 0;
 
-  // --- 하이브리드 점수 계산 ---
   const scored = docs
     .map((doc) => {
       const kScore = keywordScore(tokens, doc.filename, doc.content || "");
@@ -132,11 +160,9 @@ export async function POST(req: NextRequest) {
 
       let hybrid: number;
       if (hasVectorResults) {
-        // 키워드 점수 0~1 정규화 후 가중 합산
         const kNorm = Math.min(kScore, KEYWORD_SCORE_CAP) / KEYWORD_SCORE_CAP;
         hybrid = kNorm * KEYWORD_WEIGHT + vScore * VECTOR_WEIGHT;
       } else {
-        // 벡터 없으면 키워드 점수만 사용
         hybrid = kScore;
       }
 
@@ -146,50 +172,96 @@ export async function POST(req: NextRequest) {
     .sort((a, b) => b.hybrid - a.hybrid);
 
   if (scored.length === 0) {
-    return NextResponse.json({ answer: null });
+    const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { question: question.trim(), answer: null, was_answered: false });
+    return NextResponse.json({ answer: null, log_id });
   }
 
   const best = scored[0];
-  const snippet = extractSnippet(tokens, best.content || "");
 
-  // --- Gemini 답변 생성 ---
-  let answer = snippet;
+  // 점수가 낮으면 미응답으로 분류
+  const LOW_SCORE_THRESHOLD = hasVectorResults ? 0.12 : 3;
+  const wasAnswered = best.hybrid >= LOW_SCORE_THRESHOLD;
 
-  if (process.env.GOOGLE_AI_API_KEY && snippet) {
+  // 상위 3개 문서를 컨텍스트로 활용 (일관된 종합 답변)
+  const topDocs = scored.slice(0, 3);
+
+  // "누구" 계열 질문이면 각부서업무담당자 문서를 강제로 컨텍스트에 포함
+  const isPersonQuery = /누구|담당자|담당은|담당이|누가/.test(question);
+  if (isPersonQuery) {
+    const buseoDoc = scored.find(
+      (d) => d.filename.includes("각부서업무담당자") && !topDocs.some((t) => t.id === d.id)
+    );
+    if (buseoDoc) topDocs[topDocs.length - 1] = buseoDoc;
+  }
+
+  const contextBlocks = topDocs.map((doc) => {
+    const raw = doc.content || "";
+    // 각부서업무담당자 문서는 전체 내용 전달 (담당자 정보 누락 방지)
+    if (doc.filename.includes("각부서업무담당자")) return `[문서: ${doc.filename}]\n${raw}`;
+    const snippet = raw.length <= 600 ? raw : extractSnippet(tokens, raw).slice(0, 600);
+    return `[문서: ${doc.filename}]\n${snippet}`;
+  }).join("\n\n---\n\n");
+
+  // fallback: 담당자 질문이면 각부서업무담당자 문서 내용을, 아니면 best 문서 발췌
+  const fallbackDoc = isPersonQuery
+    ? (topDocs.find((d) => d.filename.includes("각부서업무담당자")) ?? best)
+    : best;
+  const fallbackRaw = fallbackDoc.content || "";
+  const fallbackSnippet = fallbackRaw.length <= 1500 ? fallbackRaw : extractSnippet(tokens, fallbackRaw);
+  let answer = fallbackSnippet;
+
+  if (process.env.GOOGLE_AI_API_KEY && contextBlocks) {
     try {
       const prompt = `당신은 선엔지니어링 총무팀 업무 안내 AI입니다.
-아래 사내 문서 내용을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
+아래 사내 문서들을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
 
-[문서: ${best.filename}]
-${snippet}
+${contextBlocks}
 
 [직원 질문]
 ${question}
 
 답변 시 주의사항:
+- 여러 문서의 내용을 종합하여 일관되고 완전한 답변을 작성할 것
+- 담당자, 절차, 주의사항, 링크 등 모든 세부 정보를 빠짐없이 포함할 것
+- 단계별 절차가 있으면 순서대로 모두 안내할 것
 - 문서에 없는 내용은 추측하지 말 것
-- 핵심 정보를 간결하게 요약할 것
 - 자연스러운 구어체 한국어로 작성할 것
 - 마크다운 형식(볼드, 목록 등) 사용 가능`;
 
+      console.log(`[Gemini] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
       const geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.3, maxOutputTokens: 800 },
+            generationConfig: { temperature: 0.3, maxOutputTokens: 1000 },
           }),
         }
       );
       const geminiData = await geminiRes.json();
       const generated = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (generated) answer = generated;
+      if (generated) {
+        console.log(`[Gemini] 답변 생성 성공 (${generated.length}자)`);
+        answer = generated;
+      } else {
+        console.error("[Gemini] 답변 생성 실패:", JSON.stringify(geminiData).slice(0, 300));
+      }
     } catch (e) {
-      console.warn("Gemini 답변 생성 실패, 원문 발췌로 fallback:", e);
+      console.error("Gemini 답변 생성 실패, 원문 발췌로 fallback:", e);
     }
   }
+
+  const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    question: question.trim(),
+    answer,
+    source_filename: best.filename,
+    source_category: best.category,
+    score: best.hybrid,
+    search_mode: hasVectorResults ? "hybrid" : "keyword",
+    was_answered: wasAnswered,
+  });
 
   return NextResponse.json({
     answer,
@@ -197,5 +269,6 @@ ${question}
     category: best.category,
     score: best.hybrid,
     searchMode: hasVectorResults ? "hybrid" : "keyword",
+    log_id,
   });
 }
