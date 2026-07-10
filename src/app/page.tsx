@@ -99,7 +99,7 @@ export default function ChatPage() {
     const cleaned = text.replace(/^[^\w가-힣]+/, "").trim();
     addMessage({ role: "user", text });
 
-    const cat = categories.find((c) => text.includes(c.label));
+    const cat = categories.find((c) => cleaned === c.label);
     if (cat) {
       const catKws = CATEGORY_KEYWORDS[cat.label] || [];
       const hint = catKws.length > 0 ? catKws.join(", ") : cat.label;
