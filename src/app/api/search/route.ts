@@ -210,7 +210,7 @@ export async function POST(req: NextRequest) {
   const fallbackSnippet = fallbackRaw.length <= 1500 ? fallbackRaw : extractSnippet(tokens, fallbackRaw);
   let answer = fallbackSnippet;
 
-  if (process.env.GOOGLE_AI_API_KEY && contextBlocks) {
+  if (process.env.GROQ_API_KEY && contextBlocks) {
     try {
       const prompt = `당신은 선엔지니어링 총무팀 업무 안내 AI입니다.
 아래 사내 문서들을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
@@ -228,28 +228,30 @@ ${question}
 - 자연스러운 구어체 한국어로 작성할 것
 - 마크다운 형식(볼드, 목록 등) 사용 가능`;
 
-      console.log(`[Gemini] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
-      const geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.3, maxOutputTokens: 1000 },
-          }),
-        }
-      );
-      const geminiData = await geminiRes.json();
-      const generated = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+      console.log(`[Groq] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
+      const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.3,
+          max_tokens: 1000,
+        }),
+      });
+      const groqData = await groqRes.json();
+      const generated = groqData.choices?.[0]?.message?.content;
       if (generated) {
-        console.log(`[Gemini] 답변 생성 성공 (${generated.length}자)`);
+        console.log(`[Groq] 답변 생성 성공 (${generated.length}자)`);
         answer = generated;
       } else {
-        console.error("[Gemini] 답변 생성 실패:", JSON.stringify(geminiData).slice(0, 300));
+        console.error("[Groq] 답변 생성 실패:", JSON.stringify(groqData).slice(0, 300));
       }
     } catch (e) {
-      console.error("Gemini 답변 생성 실패, 원문 발췌로 fallback:", e);
+      console.error("Groq 답변 생성 실패, 원문 발췌로 fallback:", e);
     }
   }
 
