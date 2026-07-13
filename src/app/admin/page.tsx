@@ -350,7 +350,7 @@ function UploadTab({ password }: { password: string }) {
             value={filename}
             onChange={(e) => setFilename(e.target.value)}
             placeholder="예) 감리현장 개설 시 총무팀 요청사항"
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-blue-400"
             required
           />
         </div>
@@ -359,7 +359,7 @@ function UploadTab({ password }: { password: string }) {
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-blue-400 bg-white"
           >
             {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
           </select>
@@ -371,7 +371,7 @@ function UploadTab({ password }: { password: string }) {
             onChange={(e) => setContent(e.target.value)}
             placeholder="챗봇이 참고할 문서 내용을 입력하세요."
             rows={10}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 resize-y"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-blue-400 resize-y"
             required
           />
           <p className="text-xs text-gray-400 mt-1">{content.length.toLocaleString()} 자</p>
