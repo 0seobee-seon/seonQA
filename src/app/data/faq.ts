@@ -1,4 +1,4 @@
-export type Category = "인사" | "총무" | "구매" | "회계";
+export type Category = "총무팀" | "수주전략팀" | "건설사업관리본부";
 
 export interface FaqItem {
   id: string;
@@ -13,16 +13,15 @@ export interface FaqItem {
 }
 
 export const categories: { id: Category; label: string; icon: string }[] = [
-  { id: "인사", label: "인사", icon: "👤" },
-  { id: "총무", label: "총무", icon: "🏢" },
-  { id: "구매", label: "구매", icon: "🛒" },
-  { id: "회계", label: "회계", icon: "📊" },
+  { id: "총무팀", label: "총무팀", icon: "🏢" },
+  { id: "수주전략팀", label: "수주전략팀", icon: "📈" },
+  { id: "건설사업관리본부", label: "건설사업관리본부", icon: "🏗️" },
 ];
 
 export const faqs: FaqItem[] = [
   {
     id: "1",
-    category: "총무",
+    category: "총무팀",
     question: "명함 신청 방법",
     keywords: ["명함", "신청", "주문", "명함신청"],
     answer: `**명함 신청 절차**
@@ -37,7 +36,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "2",
-    category: "회계",
+    category: "총무팀",
     question: "지출결의서 작성 방법",
     keywords: ["지출결의서", "지출", "결의서", "경비", "작성"],
     answer: `**지출결의서 작성 절차**
@@ -52,7 +51,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "3",
-    category: "구매",
+    category: "총무팀",
     question: "사무가구 구입 방법",
     keywords: ["사무가구", "가구", "구입", "책상", "의자", "구매"],
     answer: `**사무가구 구입 절차**
@@ -67,7 +66,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "4",
-    category: "구매",
+    category: "총무팀",
     question: "전산기기 신청 방법",
     keywords: ["전산기기", "컴퓨터", "노트북", "모니터", "프린터", "IT기기", "신청"],
     answer: `**전산기기 신청 절차**
@@ -82,7 +81,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "5",
-    category: "인사",
+    category: "총무팀",
     question: "4대보험 관련 (연금·건강·고용)",
     keywords: ["4대보험", "국민연금", "건강보험", "고용보험", "산재보험", "보험", "연금"],
     answer: `**4대보험 관련 안내**
@@ -102,7 +101,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "6",
-    category: "회계",
+    category: "총무팀",
     question: "문서번호 부여 방법",
     keywords: ["문서번호", "문서", "번호", "공문", "문서관리"],
     answer: `**문서번호 부여 절차**
@@ -118,7 +117,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "7",
-    category: "총무",
+    category: "총무팀",
     question: "각 업무별 담당 직원",
     keywords: ["담당자", "담당", "직원", "연락처", "부서", "누구"],
     answer: `**업무별 담당자 안내**
@@ -135,7 +134,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "8",
-    category: "회계",
+    category: "총무팀",
     question: "현장경비 청구 및 사용내역 제출",
     keywords: ["현장경비", "현장", "경비", "청구", "사용내역", "출장", "식대"],
     answer: `**현장경비 청구 절차**
@@ -153,7 +152,7 @@ export const faqs: FaqItem[] = [
   },
   {
     id: "9",
-    category: "인사",
+    category: "총무팀",
     question: "휴가 신청·사직서 제출 방법",
     keywords: ["휴가", "연차", "반차", "사직서", "퇴직", "신청", "제출"],
     answer: `**휴가 신청 방법**

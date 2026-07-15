@@ -37,11 +37,11 @@ function renderBotText(text: string) {
   const lines = text.split("\n");
   return lines.map((line, i) => {
     if (line.startsWith("**") && line.endsWith("**")) {
-      return <p key={i} className="font-semibold text-gray-800 mt-2 mb-0.5">{line.replace(/\*\*/g, "")}</p>;
+      return <p key={i} className="font-serif font-medium text-ink mt-2 mb-0.5">{line.replace(/\*\*/g, "")}</p>;
     }
     if (line.startsWith("> ")) {
       return (
-        <div key={i} className="border-l-3 border-blue-300 bg-blue-50 px-2 py-1 rounded-r text-xs text-blue-700 my-1">
+        <div key={i} className="border-l-2 border-sun bg-paper px-2 py-1 text-xs text-ink/70 my-1">
           {line.replace(/^> /, "")}
         </div>
       );
@@ -61,19 +61,27 @@ function renderBotText(text: string) {
   });
 }
 
+function TypingDots() {
+  return (
+    <div className="flex items-center gap-1 py-1">
+      <span className="w-1.5 h-1.5 rounded-full bg-ink/30 animate-bounce [animation-delay:-0.3s]" />
+      <span className="w-1.5 h-1.5 rounded-full bg-ink/30 animate-bounce [animation-delay:-0.15s]" />
+      <span className="w-1.5 h-1.5 rounded-full bg-ink/30 animate-bounce" />
+    </div>
+  );
+}
+
 const WELCOME: Message = {
   id: 0,
   role: "bot",
-  text: "안녕하세요! 👋\n선엔지니어링 총무팀 Q&A 챗봇입니다.\n아래 카테고리를 선택하거나 질문을 직접 입력해 주세요.",
+  text: "안녕하세요! 👋\n선엔지니어링 Q&A 챗봇입니다.\n아래 카테고리를 선택하거나 질문을 직접 입력해 주세요.",
   quickReplies: categories.map((c) => `${c.icon} ${c.label}`),
 };
 
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  "인사·급여": ["연차", "급여", "휴가", "인사", "퇴직", "입사"],
-  "사내규정": ["규정", "복무", "취업규칙", "상조"],
-  "사내전화": ["전화", "내선", "번호"],
-  "그룹웨어": ["그룹웨어", "비밀번호", "로그인", "전자결재"],
-  "양식·서류": ["양식", "서류", "신청서", "사직", "차용"],
+  "총무팀": ["명함", "지출결의서", "사무가구", "전산기기", "문서번호", "휴가", "4대보험"],
+  "수주전략팀": ["수주", "입찰", "견적", "제안서", "계약"],
+  "건설사업관리본부": ["현장", "공사", "감리", "시공", "안전관리"],
 };
 
 export default function ChatPage() {
@@ -167,45 +175,48 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className="flex flex-col h-screen bg-paper">
       {/* 헤더 */}
-      <header className="bg-blue-700 text-white px-4 py-4 flex items-center gap-3 shadow shrink-0">
-        <div className="w-9 h-9 rounded-full bg-blue-500 flex items-center justify-center text-lg">🤖</div>
+      <header className="bg-card border-b border-line px-4 py-4 flex items-center gap-3 shrink-0 shadow-sm">
         <div className="flex-1">
-          <h1 className="text-base font-bold leading-tight">선엔지니어링 Q&A</h1>
-          <p className="text-xs text-blue-200">청주 총무팀 업무 도우미</p>
+          <h1 className="flex items-center gap-2">
+            <span className="font-brand font-black uppercase tracking-tight text-seal text-2xl">SEON</span>
+            <span className="font-serif text-[10px] font-semibold uppercase tracking-widest text-ink bg-ink/10 border border-ink/20 rounded-full px-2 py-1">Chatbot</span>
+          </h1>
         </div>
       </header>
 
       {/* 메시지 영역 */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {messages.map((msg) => (
-          <div key={msg.id} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
+          <div key={msg.id} className={`msg-in flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
             {/* 말풍선 */}
             <div
-              className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+              className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm ${
                 msg.role === "user"
-                  ? "bg-blue-700 text-white rounded-tr-sm"
-                  : "bg-white border border-gray-200 text-gray-800 rounded-tl-sm shadow-sm"
+                  ? "bg-ink text-paper"
+                  : "bg-card border border-line text-ink"
               }`}
             >
-              {msg.role === "bot" ? renderBotText(msg.text) : <p>{msg.text}</p>}
+              {msg.role === "bot"
+                ? msg.text === "🔍 검색 중..." ? <TypingDots /> : renderBotText(msg.text)
+                : <p>{msg.text}</p>}
             </div>
 
             {/* 피드백 버튼 (봇 답변 + log_id 있을 때만) */}
             {msg.role === "bot" && msg.log_id && (
               <div className="flex items-center gap-1 mt-1.5 ml-1">
                 {msg.feedbackSent ? (
-                  <span className="text-xs text-gray-400">피드백 감사합니다</span>
+                  <span className="text-xs text-ink/40">피드백 감사합니다</span>
                 ) : (
                   <>
-                    <span className="text-xs text-gray-400 mr-1">도움이 됐나요?</span>
+                    <span className="text-xs text-ink/40 mr-1">도움이 됐나요?</span>
                     <button
                       onClick={async () => {
                         await sendFeedback(msg.log_id!, 1);
                         markFeedback(msg.id);
                       }}
-                      className="text-base px-1.5 py-0.5 rounded hover:bg-green-50 transition-colors"
+                      className="text-base px-1.5 py-0.5 rounded hover:bg-sun/15 hover:scale-110 transition-all"
                       title="도움됨"
                     >
                       👍
@@ -215,7 +226,7 @@ export default function ChatPage() {
                         await sendFeedback(msg.log_id!, -1);
                         markFeedback(msg.id);
                       }}
-                      className="text-base px-1.5 py-0.5 rounded hover:bg-red-50 transition-colors"
+                      className="text-base px-1.5 py-0.5 rounded hover:bg-seal/10 hover:scale-110 transition-all"
                       title="도움안됨"
                     >
                       👎
@@ -232,7 +243,7 @@ export default function ChatPage() {
                   <button
                     key={r}
                     onClick={() => handleQuickReply(r)}
-                    className="text-xs px-3 py-1.5 rounded-full border border-blue-300 text-blue-700 bg-white hover:bg-blue-50 transition-all"
+                    className="text-xs px-3 py-1.5 rounded-full border border-sun text-sun bg-card hover:bg-sun/10 hover:scale-105 active:scale-95 transition-all"
                   >
                     {r}
                   </button>
@@ -247,7 +258,7 @@ export default function ChatPage() {
       {/* 입력창 */}
       <form
         onSubmit={handleSubmit}
-        className="shrink-0 border-t border-gray-200 bg-white px-4 py-3 flex gap-2 items-center"
+        className="shrink-0 border-t border-line bg-card px-4 py-3 flex gap-2 items-center"
       >
         <input
           ref={inputRef}
@@ -255,11 +266,11 @@ export default function ChatPage() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="질문을 입력하세요..."
-          className="flex-1 bg-gray-100 rounded-full px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-400"
+          className="flex-1 bg-paper rounded-full px-4 py-2.5 text-sm text-ink placeholder-ink/35 outline-none focus:ring-2 focus:ring-seal/40 transition-shadow"
         />
         <button
           type="submit"
-          className="w-10 h-10 bg-blue-700 text-white rounded-full flex items-center justify-center shrink-0 hover:bg-blue-800 transition-all disabled:opacity-40"
+          className="w-10 h-10 bg-ink text-paper rounded-full flex items-center justify-center shrink-0 hover:bg-seal hover:scale-105 active:scale-95 transition-all disabled:opacity-30 disabled:hover:scale-100"
           disabled={!input.trim()}
         >
           ▶
