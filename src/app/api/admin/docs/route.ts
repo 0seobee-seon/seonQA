@@ -1,19 +1,10 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
-
-function checkAuth(req: NextRequest) {
-  return req.headers.get("x-admin-password") === process.env.ADMIN_PASSWORD;
-}
-
-function supabaseClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
-}
+import { checkAdminAuth } from "../auth";
+import { supabaseAdmin as supabaseClient } from "../../supabaseAdmin";
 
 export async function GET(req: NextRequest) {
-  if (!checkAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authError = checkAdminAuth(req, "docs:view");
+  if (authError) return authError;
 
   const { searchParams } = new URL(req.url);
   const category = searchParams.get("category");
@@ -45,7 +36,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  if (!checkAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authError = checkAdminAuth(req, "docs:delete");
+  if (authError) return authError;
 
   const { id } = await req.json();
   if (!id) return NextResponse.json({ error: "id 필요" }, { status: 400 });

@@ -1,9 +1,6 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
-
-function checkAuth(req: NextRequest) {
-  return req.headers.get("x-admin-password") === process.env.ADMIN_PASSWORD;
-}
+import { checkAdminAuth } from "../auth";
+import { supabaseAdmin } from "../../supabaseAdmin";
 
 async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
@@ -27,17 +24,15 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
 }
 
 export async function POST(req: NextRequest) {
-  if (!checkAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authError = checkAdminAuth(req, "upload");
+  if (authError) return authError;
 
   const { filename, category, content } = await req.json();
   if (!filename?.trim() || !content?.trim()) {
     return NextResponse.json({ error: "제목과 내용을 입력해 주세요." }, { status: 400 });
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = supabaseAdmin();
 
   // 1. 문서 삽입
   const { data: doc, error: insertError } = await supabase

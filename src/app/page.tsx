@@ -12,16 +12,29 @@ type Message = {
   feedbackSent?: boolean;
 };
 
-async function searchDocuments(question: string): Promise<{ answer: string | null; source?: string; log_id?: string }> {
+type HistoryItem = { role: "user" | "bot"; text: string };
+
+const HISTORY_TURNS = 3;
+
+type SearchResult = {
+  answer: string | null;
+  source?: string;
+  log_id?: string;
+  status: "ok" | "not_found" | "error";
+};
+
+async function searchDocuments(question: string, history: HistoryItem[]): Promise<SearchResult> {
   try {
     const res = await fetch("/api/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, history }),
     });
-    return await res.json();
+    if (!res.ok) return { answer: null, status: "error" };
+    const data = await res.json();
+    return { ...data, status: data.answer ? "ok" : "not_found" };
   } catch {
-    return { answer: null };
+    return { answer: null, status: "error" };
   }
 }
 
@@ -84,15 +97,43 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   "건설사업관리본부": ["현장", "공사", "감리", "시공", "안전관리"],
 };
 
+const STORAGE_KEY = "seonqa_messages";
+
+function loadStoredMessages(): Message[] {
+  if (typeof window === "undefined") return [WELCOME];
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (!saved) return [WELCOME];
+    const parsed = JSON.parse(saved);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : [WELCOME];
+  } catch {
+    return [WELCOME];
+  }
+}
+
 export default function ChatPage() {
-  const [messages, setMessages] = useState<Message[]>([WELCOME]);
+  const [messages, setMessages] = useState<Message[]>(loadStoredMessages);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const nextId = useRef(1);
+  const lastQuestionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    nextId.current = Math.max(0, ...messages.map((m) => m.id)) + 1;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    } catch {
+      // 저장 실패(용량 초과 등)는 대화 자체엔 영향 없으니 조용히 무시
+    }
   }, [messages]);
 
   function addMessage(msg: Omit<Message, "id">) {
@@ -121,14 +162,30 @@ export default function ChatPage() {
       return;
     }
 
+    lastQuestionRef.current = cleaned;
+
+    const history = messages
+      .slice(-HISTORY_TURNS * 2)
+      .filter((m) => m.text !== "🔍 검색 중...")
+      .map((m): HistoryItem => ({ role: m.role, text: m.text }));
+
     const loadingId = nextId.current++;
     setMessages((prev) => [
       ...prev,
       { id: loadingId, role: "bot", text: "🔍 검색 중..." },
     ]);
 
-    const result = await searchDocuments(cleaned);
+    const result = await searchDocuments(cleaned, history);
     setMessages((prev) => prev.filter((m) => m.id !== loadingId));
+
+    if (result.status === "error") {
+      addMessage({
+        role: "bot",
+        text: "일시적인 오류로 답변을 가져오지 못했어요. 🙏\n잠시 후 다시 시도해 주세요.",
+        quickReplies: ["다시 시도", "카테고리 보기"],
+      });
+      return;
+    }
 
     if (result.answer) {
       addMessage({
@@ -161,6 +218,10 @@ export default function ChatPage() {
     }
     if (reply === "총무팀 전화") {
       window.location.href = "tel:000-0000-0000";
+      return;
+    }
+    if (reply === "다시 시도" && lastQuestionRef.current) {
+      handleUserInput(lastQuestionRef.current);
       return;
     }
     handleUserInput(reply);

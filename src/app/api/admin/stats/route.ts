@@ -1,17 +1,12 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
-
-function checkAuth(req: NextRequest) {
-  return req.headers.get("x-admin-password") === process.env.ADMIN_PASSWORD;
-}
+import { checkAdminAuth } from "../auth";
+import { supabaseAdmin } from "../../supabaseAdmin";
 
 export async function GET(req: NextRequest) {
-  if (!checkAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authError = checkAdminAuth(req, "stats:view");
+  if (authError) return authError;
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = supabaseAdmin();
 
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);

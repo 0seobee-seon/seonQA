@@ -1,16 +1,22 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { getClientIp, isRateLimited } from "../rateLimit";
+import { supabaseAdmin } from "../supabaseAdmin";
+
+const FEEDBACK_RATE_LIMIT = 30;
+const FEEDBACK_RATE_WINDOW_MS = 60_000;
 
 export async function POST(req: NextRequest) {
+  const ip = getClientIp(req);
+  if (isRateLimited(`feedback:${ip}`, FEEDBACK_RATE_LIMIT, FEEDBACK_RATE_WINDOW_MS)) {
+    return NextResponse.json({ error: "too many requests" }, { status: 429 });
+  }
+
   const { log_id, feedback } = await req.json();
   if (!log_id || ![1, -1].includes(feedback)) {
     return NextResponse.json({ error: "invalid" }, { status: 400 });
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = supabaseAdmin();
 
   const { error } = await supabase
     .from("query_logs")

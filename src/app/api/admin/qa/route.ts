@@ -1,9 +1,6 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
-
-function checkAuth(req: NextRequest) {
-  return req.headers.get("x-admin-password") === process.env.ADMIN_PASSWORD;
-}
+import { checkAdminAuth } from "../auth";
+import { supabaseAdmin } from "../../supabaseAdmin";
 
 async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
@@ -28,12 +25,10 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
 
 // 미응답 질문 목록 조회
 export async function GET(req: NextRequest) {
-  if (!checkAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authError = checkAdminAuth(req, "qa:view");
+  if (authError) return authError;
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = supabaseAdmin();
 
   const { data, error } = await supabase
     .from("query_logs")
@@ -48,17 +43,15 @@ export async function GET(req: NextRequest) {
 
 // 미응답 질문에 답변 등록 → documents 테이블에 삽입 후 임베딩 생성
 export async function POST(req: NextRequest) {
-  if (!checkAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authError = checkAdminAuth(req, "qa:answer");
+  if (authError) return authError;
 
   const { question, answer, log_id } = await req.json();
   if (!question?.trim() || !answer?.trim()) {
     return NextResponse.json({ error: "질문과 답변을 입력해 주세요." }, { status: 400 });
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = supabaseAdmin();
 
   const content = `[자주 묻는 질문]\n질문: ${question.trim()}\n\n답변: ${answer.trim()}`;
 

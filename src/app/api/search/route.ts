@@ -1,64 +1,16 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { KEYWORD_SCORE_CAP, KEYWORD_WEIGHT, VECTOR_WEIGHT, extractSnippet, keywordScore, tokenize } from "./searchUtils";
+import { getClientIp, isRateLimited } from "../rateLimit";
+import { supabaseAdmin } from "../supabaseAdmin";
 
-const STOPWORDS = new Set([
-  "찾아줘", "알려줘", "알려", "어떻게", "무엇", "뭐", "해줘", "해주세요",
-  "방법", "절차", "있나요", "인가요", "입니까", "알고싶어", "궁금", "뭔가요",
-  "어디", "언제", "누가", "왜", "어느", "입니다", "입니까", "하나요",
-]);
+type HistoryItem = { role: "user" | "bot"; text: string };
+type SupabaseAdmin = ReturnType<typeof supabaseAdmin>;
 
-const KEYWORD_WEIGHT = 0.4;
-const VECTOR_WEIGHT = 0.6;
-const KEYWORD_SCORE_CAP = 20;
-
-function normalize(text: string) {
-  return text.replace(/([가-힣])\s+(?=[가-힣])/g, "$1");
-}
-
-function tokenize(question: string): string[] {
-  return (question.match(/[가-힣a-zA-Z0-9]{2,}/g) || []).filter(
-    (t) => !STOPWORDS.has(t)
-  );
-}
-
-function keywordScore(tokens: string[], filename: string, content: string): number {
-  const norm = normalize(content);
-  const normFilename = normalize(filename);
-  let score = 0;
-  for (const t of tokens) {
-    if (normFilename.includes(t)) score += 5;
-    if (norm.includes(t)) score += 2;
-  }
-  return score;
-}
-
-function extractSnippet(tokens: string[], content: string): string {
-  const norm = normalize(content);
-  const seen = new Set<string>();
-  const snippets: string[] = [];
-
-  for (const word of tokens) {
-    let idx = 0;
-    while ((idx = norm.indexOf(word, idx)) !== -1) {
-      const start = Math.max(0, idx - 50);
-      const end = Math.min(norm.length, idx + 100);
-      const snippet = norm.slice(start, end).trim();
-      if (!seen.has(snippet)) {
-        seen.add(snippet);
-        snippets.push(snippet);
-      }
-      idx += word.length;
-      if (snippets.length >= 4) break;
-    }
-    if (snippets.length >= 4) break;
-  }
-
-  return snippets.length > 0 ? snippets.join("\n...\n") : norm.slice(0, 300);
-}
+const SEARCH_RATE_LIMIT = 20;
+const SEARCH_RATE_WINDOW_MS = 60_000;
 
 async function logQuery(
-  supabaseUrl: string,
-  supabaseKey: string,
+  supabase: SupabaseAdmin,
   payload: {
     question: string;
     answer: string | null;
@@ -69,48 +21,41 @@ async function logQuery(
     was_answered: boolean;
   }
 ): Promise<string | null> {
-  try {
-    const res = await fetch(`${supabaseUrl}/rest/v1/query_logs`, {
-      method: "POST",
-      headers: {
-        apikey: supabaseKey,
-        Authorization: `Bearer ${supabaseKey}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation",
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return (data[0]?.id as string) ?? null;
-  } catch {
-    return null;
-  }
+  const { data, error } = await supabase.from("query_logs").insert(payload).select("id").single();
+  if (error) return null;
+  return data?.id ?? null;
 }
 
 export async function POST(req: NextRequest) {
-  const { question } = await req.json();
+  const ip = getClientIp(req);
+  if (isRateLimited(`search:${ip}`, SEARCH_RATE_LIMIT, SEARCH_RATE_WINDOW_MS)) {
+    return NextResponse.json({ answer: null, error: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요." }, { status: 429 });
+  }
+
+  const { question, history } = (await req.json()) as { question: string; history?: HistoryItem[] };
 
   if (!question?.trim()) {
     return NextResponse.json({ answer: null });
   }
 
-  const tokens = tokenize(question.trim());
+  // 팔로우업 질문("그럼 서류는 어디서 받아?")이 이전 주제를 이어받도록,
+  // 직전 사용자 질문을 검색어(키워드/임베딩)에 함께 실어 보낸다.
+  const prevUserTurn = (history ?? []).filter((h) => h.role === "user").slice(-1)[0]?.text ?? "";
+  const retrievalText = `${prevUserTurn} ${question}`.trim();
+
+  const tokens = tokenize(retrievalText);
   if (tokens.length === 0) {
     return NextResponse.json({ answer: null });
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = supabaseAdmin();
 
   const { data: docs, error } = await supabase
     .from("documents")
     .select("id, filename, category, content");
 
   if (error || !docs || docs.length === 0) {
-    const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { question: question.trim(), answer: null, was_answered: false });
+    const log_id = await logQuery(supabase, { question: question.trim(), answer: null, was_answered: false });
     return NextResponse.json({ answer: null, log_id, error: error?.message });
   }
 
@@ -126,7 +71,7 @@ export async function POST(req: NextRequest) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "models/gemini-embedding-001",
-            content: { parts: [{ text: question.trim().slice(0, 1000) }] },
+            content: { parts: [{ text: retrievalText.slice(0, 1000) }] },
             outputDimensionality: 768,
           }),
         }
@@ -172,7 +117,7 @@ export async function POST(req: NextRequest) {
     .sort((a, b) => b.hybrid - a.hybrid);
 
   if (scored.length === 0) {
-    const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { question: question.trim(), answer: null, was_answered: false });
+    const log_id = await logQuery(supabase, { question: question.trim(), answer: null, was_answered: false });
     return NextResponse.json({ answer: null, log_id });
   }
 
@@ -212,15 +157,20 @@ export async function POST(req: NextRequest) {
 
   if (process.env.GROQ_API_KEY && contextBlocks) {
     try {
+      const historyBlock = (history ?? []).length > 0
+        ? `[이전 대화]\n${(history ?? []).map((h) => `${h.role === "user" ? "직원" : "챗봇"}: ${h.text}`).join("\n")}\n\n`
+        : "";
+
       const prompt = `당신은 선엔지니어링 총무팀 업무 안내 AI입니다.
 아래 사내 문서들을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
 
-${contextBlocks}
+${historyBlock}${contextBlocks}
 
 [직원 질문]
 ${question}
 
 답변 시 주의사항:
+- 이전 대화가 있다면 "그럼", "거기서" 같은 이어지는 표현이 무엇을 가리키는지 문맥으로 파악할 것
 - 여러 문서의 내용을 종합하여 일관되고 완전한 답변을 작성할 것
 - 담당자, 절차, 주의사항, 링크 등 모든 세부 정보를 빠짐없이 포함할 것
 - 단계별 절차가 있으면 순서대로 모두 안내할 것
@@ -255,7 +205,7 @@ ${question}
     }
   }
 
-  const log_id = await logQuery(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+  const log_id = await logQuery(supabase, {
     question: question.trim(),
     answer,
     source_filename: best.filename,
