@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractSnippet, keywordScore, normalize, tokenize } from "./searchUtils.ts";
+import { applyCategoryBoost, compareByHybridThenRecency, extractSnippet, keywordScore, normalize, tokenize } from "./searchUtils.ts";
 
 test("tokenize drops stopwords and short tokens", () => {
   const tokens = tokenize("명함 신청 방법 알려줘");
@@ -39,4 +39,34 @@ test("extractSnippet returns a window around the matched token", () => {
 test("extractSnippet falls back to the normalized head of content when no token matches", () => {
   const content = "관련 없는 내용입니다.";
   assert.equal(extractSnippet(["없는토큰"], content), normalize(content));
+});
+
+test("applyCategoryBoost boosts 직접답변 category", () => {
+  assert.equal(applyCategoryBoost(1, "직접답변"), 1.15);
+});
+
+test("applyCategoryBoost leaves other categories unchanged", () => {
+  assert.equal(applyCategoryBoost(1, "업무매뉴얼"), 1);
+  assert.equal(applyCategoryBoost(1, null), 1);
+  assert.equal(applyCategoryBoost(1, undefined), 1);
+});
+
+test("compareByHybridThenRecency sorts by score when scores differ clearly", () => {
+  const a = { hybrid: 0.9, created_at: "2026-01-01" };
+  const b = { hybrid: 0.5, created_at: "2026-06-01" };
+  assert.ok(compareByHybridThenRecency(a, b) < 0, "higher score should sort first");
+});
+
+test("compareByHybridThenRecency prefers the more recent doc when scores are near-tied", () => {
+  const older = { hybrid: 0.50, created_at: "2026-01-01T00:00:00Z" };
+  const newer = { hybrid: 0.51, created_at: "2026-06-01T00:00:00Z" };
+  const result = [older, newer].sort(compareByHybridThenRecency);
+  assert.equal(result[0], newer);
+});
+
+test("compareByHybridThenRecency does not let recency override a clear score gap", () => {
+  const olderButBetter = { hybrid: 0.9, created_at: "2026-01-01T00:00:00Z" };
+  const newerButWorse = { hybrid: 0.2, created_at: "2026-06-01T00:00:00Z" };
+  const result = [newerButWorse, olderButBetter].sort(compareByHybridThenRecency);
+  assert.equal(result[0], olderButBetter);
 });

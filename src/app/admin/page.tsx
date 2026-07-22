@@ -397,6 +397,102 @@ function UploadTab({ password }: { password: string }) {
 
 // ─── 탭: 문서 관리 ───────────────────────────────────────────────────────────
 
+function EditDocPanel({ password, docId, onDone, onCancel }: { password: string; docId: string; onDone: () => void; onCancel: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [filename, setFilename] = useState("");
+  const [category, setCategory] = useState("업무매뉴얼");
+  const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    adminFetch(`/api/admin/docs?id=${docId}`, password)
+      .then((r) => r.json())
+      .then((d) => {
+        setFilename(d.doc?.filename ?? "");
+        setCategory(d.doc?.category ?? "업무매뉴얼");
+        setContent(d.doc?.content ?? "");
+      })
+      .finally(() => setLoading(false));
+  }, [password, docId]);
+
+  async function handleSave() {
+    if (!filename.trim() || !content.trim()) return;
+    setSaving(true);
+    setStatus(null);
+    const res = await adminFetch("/api/admin/docs", password, {
+      method: "PATCH",
+      body: JSON.stringify({ id: docId, filename: filename.trim(), category, content: content.trim() }),
+    });
+    const data = await res.json();
+    setSaving(false);
+    if (res.ok) {
+      onDone();
+    } else {
+      setStatus({ type: "error", msg: data.error ?? "저장 실패" });
+    }
+  }
+
+  return (
+    <div className="bg-blue-50 rounded-xl border border-blue-200 p-4 space-y-3">
+      {loading ? (
+        <div className="text-center py-6 text-gray-400 text-sm">불러오는 중...</div>
+      ) : (
+        <>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">문서 제목</label>
+            <input
+              value={filename}
+              onChange={(e) => setFilename(e.target.value)}
+              className="w-full border border-blue-200 rounded-lg px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">카테고리</label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full border border-blue-200 rounded-lg px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+            >
+              {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">내용</label>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              rows={10}
+              className="w-full border border-blue-200 rounded-lg px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-blue-400 bg-white resize-y"
+            />
+          </div>
+
+          {status && (
+            <div className="text-sm px-3 py-2 rounded-lg bg-red-50 text-red-700">❌ {status.msg}</div>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleSave}
+              disabled={saving || !filename.trim() || !content.trim()}
+              className="px-4 py-2 bg-blue-700 text-white text-sm rounded-lg disabled:opacity-40 hover:bg-blue-800 transition-colors"
+            >
+              {saving ? "저장 및 재임베딩 중..." : "저장"}
+            </button>
+            <button
+              onClick={onCancel}
+              className="px-4 py-2 bg-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-300 transition-colors"
+            >
+              취소
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function DocsTab({ password }: { password: string }) {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [loading, setLoading] = useState(true);
@@ -404,6 +500,7 @@ function DocsTab({ password }: { password: string }) {
   const [filterCat, setFilterCat] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -462,37 +559,58 @@ function DocsTab({ password }: { password: string }) {
           </div>
           <div className="divide-y divide-gray-50">
             {filtered.map((doc) => (
-              <div key={doc.id} className="flex items-center px-4 py-3 hover:bg-gray-50 gap-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-800 truncate">{doc.filename}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {doc.category} · {new Date(doc.created_at).toLocaleDateString("ko-KR")}
-                    {!doc.has_embedding && <span className="ml-2 text-orange-500">· 임베딩 없음</span>}
-                  </p>
-                </div>
-                {confirmId === doc.id ? (
-                  <div className="flex gap-1 shrink-0">
-                    <button
-                      onClick={() => handleDelete(doc.id)}
-                      disabled={deleting === doc.id}
-                      className="text-xs px-2 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700"
-                    >
-                      {deleting === doc.id ? "삭제 중..." : "확인"}
-                    </button>
-                    <button
-                      onClick={() => setConfirmId(null)}
-                      className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded-lg"
-                    >
-                      취소
-                    </button>
+              <div key={doc.id} className="px-4 py-3 hover:bg-gray-50">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-gray-800 truncate">{doc.filename}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {doc.category} · {new Date(doc.created_at).toLocaleDateString("ko-KR")}
+                      {!doc.has_embedding && <span className="ml-2 text-orange-500">· 임베딩 없음</span>}
+                    </p>
                   </div>
-                ) : (
-                  <button
-                    onClick={() => setConfirmId(doc.id)}
-                    className="shrink-0 text-xs px-2 py-1 text-red-500 border border-red-200 rounded-lg hover:bg-red-50"
-                  >
-                    삭제
-                  </button>
+                  {confirmId === doc.id ? (
+                    <div className="flex gap-1 shrink-0">
+                      <button
+                        onClick={() => handleDelete(doc.id)}
+                        disabled={deleting === doc.id}
+                        className="text-xs px-2 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700"
+                      >
+                        {deleting === doc.id ? "삭제 중..." : "확인"}
+                      </button>
+                      <button
+                        onClick={() => setConfirmId(null)}
+                        className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded-lg"
+                      >
+                        취소
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-1 shrink-0">
+                      <button
+                        onClick={() => setEditingId(editingId === doc.id ? null : doc.id)}
+                        className="text-xs px-2 py-1 text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50"
+                      >
+                        {editingId === doc.id ? "닫기" : "수정"}
+                      </button>
+                      <button
+                        onClick={() => setConfirmId(doc.id)}
+                        className="text-xs px-2 py-1 text-red-500 border border-red-200 rounded-lg hover:bg-red-50"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {editingId === doc.id && (
+                  <div className="mt-3">
+                    <EditDocPanel
+                      password={password}
+                      docId={doc.id}
+                      onCancel={() => setEditingId(null)}
+                      onDone={() => { setEditingId(null); load(); }}
+                    />
+                  </div>
                 )}
               </div>
             ))}

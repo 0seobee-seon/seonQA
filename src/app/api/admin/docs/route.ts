@@ -1,12 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkAdminAuth } from "../auth";
 import { supabaseAdmin as supabaseClient } from "../../supabaseAdmin";
+import { generateEmbedding } from "../embedding";
 
 export async function GET(req: NextRequest) {
   const authError = checkAdminAuth(req, "docs:view");
   if (authError) return authError;
 
   const { searchParams } = new URL(req.url);
+  const id = searchParams.get("id");
+
+  // 수정 화면에서 문서 하나의 전체 내용을 불러올 때 사용
+  if (id) {
+    const { data, error } = await supabaseClient()
+      .from("documents")
+      .select("id, filename, category, content")
+      .eq("id", id)
+      .single();
+    if (error || !data) return NextResponse.json({ error: error?.message ?? "문서를 찾을 수 없습니다." }, { status: 404 });
+    return NextResponse.json({ doc: data });
+  }
+
   const category = searchParams.get("category");
   const search = searchParams.get("search");
 
@@ -33,6 +47,31 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({ docs });
+}
+
+export async function PATCH(req: NextRequest) {
+  const authError = checkAdminAuth(req, "docs:update");
+  if (authError) return authError;
+
+  const { id, filename, category, content } = await req.json();
+  if (!id || !filename?.trim() || !content?.trim()) {
+    return NextResponse.json({ error: "제목과 내용을 입력해 주세요." }, { status: 400 });
+  }
+
+  const embedding = await generateEmbedding(content);
+
+  const { error } = await supabaseClient()
+    .from("documents")
+    .update({
+      filename: filename.trim(),
+      category: category ?? "업무매뉴얼",
+      content: content.trim(),
+      ...(embedding ? { embedding } : {}),
+    })
+    .eq("id", id);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, embedded: !!embedding });
 }
 
 export async function DELETE(req: NextRequest) {

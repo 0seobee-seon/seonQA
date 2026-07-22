@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { KEYWORD_SCORE_CAP, KEYWORD_WEIGHT, VECTOR_WEIGHT, extractSnippet, keywordScore, tokenize } from "./searchUtils";
+import { KEYWORD_SCORE_CAP, KEYWORD_WEIGHT, VECTOR_WEIGHT, applyCategoryBoost, compareByHybridThenRecency, extractSnippet, keywordScore, tokenize } from "./searchUtils";
 import { getClientIp, isRateLimited } from "../rateLimit";
 import { supabaseAdmin } from "../supabaseAdmin";
 
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
 
   const { data: docs, error } = await supabase
     .from("documents")
-    .select("id, filename, category, content");
+    .select("id, filename, category, content, created_at");
 
   if (error || !docs || docs.length === 0) {
     const log_id = await logQuery(supabase, { question: question.trim(), answer: null, was_answered: false });
@@ -111,10 +111,12 @@ export async function POST(req: NextRequest) {
         hybrid = kScore;
       }
 
+      hybrid = applyCategoryBoost(hybrid, doc.category);
+
       return { ...doc, kScore, vScore, hybrid };
     })
     .filter((d) => d.hybrid > 0)
-    .sort((a, b) => b.hybrid - a.hybrid);
+    .sort(compareByHybridThenRecency);
 
   if (scored.length === 0) {
     const log_id = await logQuery(supabase, { question: question.trim(), answer: null, was_answered: false });

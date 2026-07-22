@@ -8,6 +8,23 @@ export const KEYWORD_WEIGHT = 0.4;
 export const VECTOR_WEIGHT = 0.6;
 export const KEYWORD_SCORE_CAP = 20;
 
+// 관리자가 미응답 질문에 직접 검증해서 답한 문서는 더 신뢰할 수 있으므로 가산점을 준다
+export const DIRECT_ANSWER_CATEGORY = "직접답변";
+export const DIRECT_ANSWER_BOOST = 1.15;
+// 점수 차이가 이 값보다 작으면 동점으로 보고 최신 문서를 우선한다 (오래된 중복/오류 문서 방지)
+export const TIE_SCORE_EPSILON = 0.03;
+
+export function applyCategoryBoost(hybrid: number, category: string | null | undefined): number {
+  return category === DIRECT_ANSWER_CATEGORY ? hybrid * DIRECT_ANSWER_BOOST : hybrid;
+}
+
+export function compareByHybridThenRecency<T extends { hybrid: number; created_at: string }>(a: T, b: T): number {
+  if (Math.abs(b.hybrid - a.hybrid) < TIE_SCORE_EPSILON) {
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  }
+  return b.hybrid - a.hybrid;
+}
+
 export function normalize(text: string): string {
   return text.replace(/([가-힣])\s+(?=[가-힣])/g, "$1");
 }
