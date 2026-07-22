@@ -16,28 +16,6 @@ type HistoryItem = { role: "user" | "bot"; text: string };
 
 const HISTORY_TURNS = 3;
 
-type SearchResult = {
-  answer: string | null;
-  source?: string;
-  log_id?: string;
-  status: "ok" | "not_found" | "error";
-};
-
-async function searchDocuments(question: string, history: HistoryItem[]): Promise<SearchResult> {
-  try {
-    const res = await fetch("/api/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history }),
-    });
-    if (!res.ok) return { answer: null, status: "error" };
-    const data = await res.json();
-    return { ...data, status: data.answer ? "ok" : "not_found" };
-  } catch {
-    return { answer: null, status: "error" };
-  }
-}
-
 async function sendFeedback(log_id: string, feedback: 1 | -1) {
   await fetch("/api/feedback", {
     method: "POST",
@@ -175,32 +153,100 @@ export default function ChatPage() {
       { id: loadingId, role: "bot", text: "🔍 검색 중..." },
     ]);
 
-    const result = await searchDocuments(cleaned, history);
-    setMessages((prev) => prev.filter((m) => m.id !== loadingId));
-
-    if (result.status === "error") {
+    const showError = () => {
+      setMessages((prev) => prev.filter((m) => m.id !== loadingId));
       addMessage({
         role: "bot",
         text: "일시적인 오류로 답변을 가져오지 못했어요. 🙏\n잠시 후 다시 시도해 주세요.",
         quickReplies: ["다시 시도", "카테고리 보기"],
       });
-      return;
-    }
+    };
 
-    if (result.answer) {
-      addMessage({
-        role: "bot",
-        text: `**📄 ${result.source ?? "문서"}**\n\n${result.answer}`,
-        quickReplies: ["다른 질문하기", "카테고리 보기"],
-        log_id: result.log_id,
+    try {
+      const res = await fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: cleaned, history }),
       });
-    } else {
-      addMessage({
-        role: "bot",
-        text: "죄송합니다. 해당 내용을 찾지 못했어요. 😅\n다른 키워드로 다시 시도하거나 총무팀에 직접 문의해 주세요.",
-        quickReplies: ["카테고리 보기", "총무팀 전화"],
-        log_id: result.log_id,
-      });
+
+      const isJson = (res.headers.get("content-type") ?? "").includes("application/json");
+
+      if (!res.ok || isJson) {
+        // 빈 질문 / 레이트리밋 / 검색결과 없음 등 - 즉시 완성된 JSON 응답
+        setMessages((prev) => prev.filter((m) => m.id !== loadingId));
+        if (!res.ok) {
+          showError();
+          return;
+        }
+        const data = await res.json();
+        if (data.answer) {
+          addMessage({
+            role: "bot",
+            text: `**📄 ${data.source ?? "문서"}**\n\n${data.answer}`,
+            quickReplies: ["다른 질문하기", "카테고리 보기"],
+            log_id: data.log_id,
+          });
+        } else {
+          addMessage({
+            role: "bot",
+            text: "죄송합니다. 해당 내용을 찾지 못했어요. 😅\n다른 키워드로 다시 시도하거나 총무팀에 직접 문의해 주세요.",
+            quickReplies: ["카테고리 보기", "총무팀 전화"],
+            log_id: data.log_id,
+          });
+        }
+        return;
+      }
+
+      // 스트리밍 응답 - 첫 줄은 메타(JSON), 이후 바이트는 답변 본문
+      if (!res.body) { showError(); return; }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let metaParsed = false;
+      let metaBuffer = "";
+      let source = "문서";
+      let logId: string | undefined;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (value) {
+          const text = decoder.decode(value, { stream: true });
+          if (!metaParsed) {
+            metaBuffer += text;
+            const nlIdx = metaBuffer.indexOf("\n");
+            if (nlIdx === -1) continue;
+            const metaLine = metaBuffer.slice(0, nlIdx);
+            const rest = metaBuffer.slice(nlIdx + 1);
+            try {
+              const meta = JSON.parse(metaLine);
+              source = meta.source ?? "문서";
+              logId = meta.log_id ?? undefined;
+            } catch {
+              // 메타 파싱 실패 시 기본값 유지
+            }
+            metaParsed = true;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === loadingId
+                  ? { ...m, text: `**📄 ${source}**\n\n${rest}`, log_id: logId }
+                  : m
+              )
+            );
+          } else {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === loadingId ? { ...m, text: m.text + text } : m))
+            );
+          }
+        }
+        if (done) break;
+      }
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === loadingId ? { ...m, quickReplies: ["다른 질문하기", "카테고리 보기"] } : m
+        )
+      );
+    } catch {
+      showError();
     }
   }
 

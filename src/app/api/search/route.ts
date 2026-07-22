@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
 import { KEYWORD_SCORE_CAP, KEYWORD_WEIGHT, VECTOR_WEIGHT, applyCategoryBoost, compareByHybridThenRecency, extractSnippet, keywordScore, tokenize } from "./searchUtils";
 import { getClientIp, isRateLimited } from "../rateLimit";
 import { supabaseAdmin } from "../supabaseAdmin";
@@ -8,6 +9,10 @@ type SupabaseAdmin = ReturnType<typeof supabaseAdmin>;
 
 const SEARCH_RATE_LIMIT = 20;
 const SEARCH_RATE_WINDOW_MS = 60_000;
+
+const groq = process.env.GROQ_API_KEY
+  ? new OpenAI({ apiKey: process.env.GROQ_API_KEY, baseURL: "https://api.groq.com/openai/v1" })
+  : null;
 
 async function logQuery(
   supabase: SupabaseAdmin,
@@ -24,6 +29,21 @@ async function logQuery(
   const { data, error } = await supabase.from("query_logs").insert(payload).select("id").single();
   if (error) return null;
   return data?.id ?? null;
+}
+
+// 스트리밍 응답의 첫 줄에 실어 보내는 메타데이터 (문서 출처, log_id 등).
+// 클라이언트는 첫 "\n" 까지를 JSON으로 파싱하고, 그 이후 바이트는 답변 본문 텍스트로 그대로 이어붙인다.
+type StreamMeta = {
+  type: "meta";
+  source: string;
+  category: string;
+  score: number;
+  searchMode: "hybrid" | "keyword";
+  log_id: string | null;
+};
+
+function streamMetaLine(meta: StreamMeta): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(meta) + "\n");
 }
 
 export async function POST(req: NextRequest) {
@@ -155,15 +175,26 @@ export async function POST(req: NextRequest) {
     : best;
   const fallbackRaw = fallbackDoc.content || "";
   const fallbackSnippet = fallbackRaw.length <= 1500 ? fallbackRaw : extractSnippet(tokens, fallbackRaw);
-  let answer = fallbackSnippet;
 
-  if (process.env.GROQ_API_KEY && contextBlocks) {
-    try {
-      const historyBlock = (history ?? []).length > 0
-        ? `[이전 대화]\n${(history ?? []).map((h) => `${h.role === "user" ? "직원" : "챗봇"}: ${h.text}`).join("\n")}\n\n`
-        : "";
+  const searchMode = hasVectorResults ? "hybrid" as const : "keyword" as const;
 
-      const prompt = `당신은 선엔지니어링 총무팀 업무 안내 AI입니다.
+  // 답변 내용은 스트리밍이 끝난 뒤에야 확정되므로, log_id를 먼저 발급받아 메타로 보내고
+  // 실제 answer 텍스트는 스트림 종료 후 별도로 업데이트한다.
+  const log_id = await logQuery(supabase, {
+    question: question.trim(),
+    answer: null,
+    source_filename: best.filename,
+    source_category: best.category,
+    score: best.hybrid,
+    search_mode: searchMode,
+    was_answered: wasAnswered,
+  });
+
+  const historyBlock = (history ?? []).length > 0
+    ? `[이전 대화]\n${(history ?? []).map((h) => `${h.role === "user" ? "직원" : "챗봇"}: ${h.text}`).join("\n")}\n\n`
+    : "";
+
+  const prompt = `당신은 선엔지니어링 총무팀 업무 안내 AI입니다.
 아래 사내 문서들을 바탕으로 직원의 질문에 친절하고 명확하게 답변해 주세요.
 
 ${historyBlock}${contextBlocks}
@@ -180,49 +211,66 @@ ${question}
 - 자연스러운 구어체 한국어로 작성할 것
 - 마크다운 형식(볼드, 목록 등) 사용 가능`;
 
-      console.log(`[Groq] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
-      const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 1000,
-        }),
-      });
-      const groqData = await groqRes.json();
-      const generated = groqData.choices?.[0]?.message?.content;
-      if (generated) {
-        console.log(`[Groq] 답변 생성 성공 (${generated.length}자)`);
-        answer = generated;
-      } else {
-        console.error("[Groq] 답변 생성 실패:", JSON.stringify(groqData).slice(0, 300));
-      }
-    } catch (e) {
-      console.error("Groq 답변 생성 실패, 원문 발췌로 fallback:", e);
-    }
-  }
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        streamMetaLine({
+          type: "meta",
+          source: best.filename,
+          category: best.category,
+          score: best.hybrid,
+          searchMode,
+          log_id,
+        })
+      );
 
-  const log_id = await logQuery(supabase, {
-    question: question.trim(),
-    answer,
-    source_filename: best.filename,
-    source_category: best.category,
-    score: best.hybrid,
-    search_mode: hasVectorResults ? "hybrid" : "keyword",
-    was_answered: wasAnswered,
+      let finalAnswer = fallbackSnippet;
+
+      if (groq && contextBlocks) {
+        try {
+          console.log(`[Groq] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
+          const completion = await groq.chat.completions.create({
+            model: "llama-3.3-70b-versatile",
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.3,
+            max_tokens: 1000,
+            stream: true,
+          });
+
+          let generated = "";
+          for await (const chunk of completion) {
+            const delta = chunk.choices[0]?.delta?.content ?? "";
+            if (delta) {
+              generated += delta;
+              controller.enqueue(encoder.encode(delta));
+            }
+          }
+
+          if (generated) {
+            console.log(`[Groq] 답변 생성 성공 (${generated.length}자)`);
+            finalAnswer = generated;
+          } else {
+            console.error("[Groq] 답변 생성 실패: 빈 응답, 원문 발췌로 fallback");
+            controller.enqueue(encoder.encode(fallbackSnippet));
+          }
+        } catch (e) {
+          console.error("Groq 답변 생성 실패, 원문 발췌로 fallback:", e);
+          controller.enqueue(encoder.encode(fallbackSnippet));
+        }
+      } else {
+        controller.enqueue(encoder.encode(fallbackSnippet));
+      }
+
+      controller.close();
+
+      if (log_id) {
+        await supabase.from("query_logs").update({ answer: finalAnswer }).eq("id", log_id);
+      }
+    },
   });
 
-  return NextResponse.json({
-    answer,
-    source: best.filename,
-    category: best.category,
-    score: best.hybrid,
-    searchMode: hasVectorResults ? "hybrid" : "keyword",
-    log_id,
+  return new Response(stream, {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }
