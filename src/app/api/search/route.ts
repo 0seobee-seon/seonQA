@@ -28,11 +28,11 @@ async function generateWithGemini(prompt: string): Promise<string | null> {
   const timeoutId = setTimeout(() => abortController.abort(), GEMINI_TIMEOUT_MS);
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash",
+      model: "gemini-3.1-flash-lite",
       generationConfig: { temperature: 0.3, maxOutputTokens: 1000 },
     });
     const result = await model.generateContent(prompt, { signal: abortController.signal });
-    return result.response.text() || null;
+    return result.response.text().trim() || null;
   } catch (e) {
     console.warn("[Gemini] 답변 생성 실패, Groq로 폴백:", e);
     return null;
