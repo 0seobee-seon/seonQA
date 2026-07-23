@@ -1,4 +1,4 @@
-import { normalize } from "./searchUtils";
+import { normalize } from "./searchUtils.ts";
 
 // stats에서 확인되는 "자주 나오는 질문" 반복 호출에 대해 Gemini 임베딩 + Groq 완성 호출을
 // 매번 다시 하지 않도록 짧은 TTL로 캐싱한다. rateLimit.ts와 같은 이유로 인스턴스 로컬

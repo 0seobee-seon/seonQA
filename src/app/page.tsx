@@ -76,6 +76,8 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
 };
 
 const STORAGE_KEY = "seonqa_messages";
+// 대화가 길어져도 localStorage/메모리가 무한정 쌓이지 않도록 최근 메시지만 유지한다.
+const MAX_STORED_MESSAGES = 200;
 
 function loadStoredMessages(): Message[] {
   if (typeof window === "undefined") return [WELCOME];
@@ -83,7 +85,9 @@ function loadStoredMessages(): Message[] {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (!saved) return [WELCOME];
     const parsed = JSON.parse(saved);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : [WELCOME];
+    return Array.isArray(parsed) && parsed.length > 0
+      ? parsed.slice(-MAX_STORED_MESSAGES)
+      : [WELCOME];
   } catch {
     return [WELCOME];
   }
@@ -108,14 +112,14 @@ export default function ChatPage() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-MAX_STORED_MESSAGES)));
     } catch {
       // 저장 실패(용량 초과 등)는 대화 자체엔 영향 없으니 조용히 무시
     }
   }, [messages]);
 
   function addMessage(msg: Omit<Message, "id">) {
-    setMessages((prev) => [...prev, { ...msg, id: nextId.current++ }]);
+    setMessages((prev) => [...prev, { ...msg, id: nextId.current++ }].slice(-MAX_STORED_MESSAGES));
   }
 
   function markFeedback(msgId: number) {
@@ -148,10 +152,8 @@ export default function ChatPage() {
       .map((m): HistoryItem => ({ role: m.role, text: m.text }));
 
     const loadingId = nextId.current++;
-    setMessages((prev) => [
-      ...prev,
-      { id: loadingId, role: "bot", text: "🔍 검색 중..." },
-    ]);
+    const loadingMsg: Message = { id: loadingId, role: "bot", text: "🔍 검색 중..." };
+    setMessages((prev) => [...prev, loadingMsg].slice(-MAX_STORED_MESSAGES));
 
     const showError = () => {
       setMessages((prev) => prev.filter((m) => m.id !== loadingId));

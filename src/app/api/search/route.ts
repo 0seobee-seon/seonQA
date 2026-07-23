@@ -30,7 +30,10 @@ async function logQuery(
   }
 ): Promise<string | null> {
   const { data, error } = await supabase.from("query_logs").insert(payload).select("id").single();
-  if (error) return null;
+  if (error) {
+    console.error("[search] query_logs insert 실패:", error.message);
+    return null;
+  }
   return data?.id ?? null;
 }
 
@@ -156,6 +159,9 @@ export async function POST(req: NextRequest) {
       if (!embData.embedding?.values) throw new Error(JSON.stringify(embData));
       const queryEmbedding = embData.embedding.values as number[];
 
+      // match_documents SQL 함수의 기본 match_threshold(0.3, supabase/migration_vector.sql)보다
+      // 낮게 잡아 후보를 더 넉넉히 받아온다 — 최종 채택 여부는 이후 hybrid 스코어링과
+      // LOW_SCORE_THRESHOLD가 결정하므로, 여기서는 좁게 자르지 않고 넓게 모으는 편이 안전하다.
       const { data: vectorDocs } = await supabase.rpc("match_documents", {
         query_embedding: queryEmbedding,
         match_threshold: 0.2,

@@ -5,6 +5,9 @@ create extension if not exists vector;
 alter table documents add column if not exists embedding vector(768);
 
 -- 3. 코사인 유사도 검색 함수 생성
+-- match_threshold 기본값(0.3)은 함수를 직접 호출할 때의 기본값일 뿐이다.
+-- 실제 서비스 호출부(src/app/api/search/route.ts)는 0.2로 넘겨 후보를 더 넉넉히 받고,
+-- 최종 채택 여부는 이후 hybrid 스코어링에서 결정한다 — 두 값이 다른 것은 의도된 것.
 create or replace function match_documents(
   query_embedding vector(768),
   match_threshold float default 0.3,
