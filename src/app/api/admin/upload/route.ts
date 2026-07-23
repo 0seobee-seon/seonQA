@@ -2,22 +2,31 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkAdminAuth } from "../auth";
 import { supabaseAdmin } from "../../supabaseAdmin";
 import { generateEmbedding } from "../embedding";
+import { manualUploadSchema } from "../../validation";
 
 export async function POST(req: NextRequest) {
   const authError = checkAdminAuth(req, "upload");
   if (authError) return authError;
 
-  const { filename, category, content } = await req.json();
-  if (!filename?.trim() || !content?.trim()) {
-    return NextResponse.json({ error: "제목과 내용을 입력해 주세요." }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
   }
+
+  const parsed = manualUploadSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "제목과 내용을 확인해 주세요. (제목 200자/내용 5만자 이내)" }, { status: 400 });
+  }
+  const { filename, category, content } = parsed.data;
 
   const supabase = supabaseAdmin();
 
   // 1. 문서 삽입
   const { data: doc, error: insertError } = await supabase
     .from("documents")
-    .insert({ filename: filename.trim(), category: category ?? "업무매뉴얼", content: content.trim() })
+    .insert({ filename, category: category ?? "업무매뉴얼", content })
     .select()
     .single();
 

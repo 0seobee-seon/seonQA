@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkAdminAuth } from "../auth";
 import { supabaseAdmin as supabaseClient } from "../../supabaseAdmin";
 import { generateEmbedding } from "../embedding";
+import { docUpdateSchema, docDeleteSchema } from "../../validation";
 
 export async function GET(req: NextRequest) {
   const authError = checkAdminAuth(req, "docs:view");
@@ -53,19 +54,27 @@ export async function PATCH(req: NextRequest) {
   const authError = checkAdminAuth(req, "docs:update");
   if (authError) return authError;
 
-  const { id, filename, category, content } = await req.json();
-  if (!id || !filename?.trim() || !content?.trim()) {
-    return NextResponse.json({ error: "제목과 내용을 입력해 주세요." }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
   }
+
+  const parsed = docUpdateSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "제목과 내용을 확인해 주세요. (제목 200자/내용 5만자 이내)" }, { status: 400 });
+  }
+  const { id, filename, category, content } = parsed.data;
 
   const embedding = await generateEmbedding(content);
 
   const { error } = await supabaseClient()
     .from("documents")
     .update({
-      filename: filename.trim(),
+      filename,
       category: category ?? "업무매뉴얼",
-      content: content.trim(),
+      content,
       ...(embedding ? { embedding } : {}),
     })
     .eq("id", id);
@@ -78,10 +87,17 @@ export async function DELETE(req: NextRequest) {
   const authError = checkAdminAuth(req, "docs:delete");
   if (authError) return authError;
 
-  const { id } = await req.json();
-  if (!id) return NextResponse.json({ error: "id 필요" }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
+  }
 
-  const { error } = await supabaseClient().from("documents").delete().eq("id", id);
+  const parsed = docDeleteSchema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: "id 필요" }, { status: 400 });
+
+  const { error } = await supabaseClient().from("documents").delete().eq("id", parsed.data.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }

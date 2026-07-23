@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getClientIp, isRateLimited } from "../rateLimit";
 import { supabaseAdmin } from "../supabaseAdmin";
+import { feedbackRequestSchema } from "../validation";
 
 const FEEDBACK_RATE_LIMIT = 30;
 const FEEDBACK_RATE_WINDOW_MS = 60_000;
@@ -11,10 +12,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "too many requests" }, { status: 429 });
   }
 
-  const { log_id, feedback } = await req.json();
-  if (!log_id || ![1, -1].includes(feedback)) {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
     return NextResponse.json({ error: "invalid" }, { status: 400 });
   }
+
+  const parsed = feedbackRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "invalid" }, { status: 400 });
+  }
+  const { log_id, feedback } = parsed.data;
 
   const supabase = supabaseAdmin();
 

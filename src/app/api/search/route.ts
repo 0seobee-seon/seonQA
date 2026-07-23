@@ -3,12 +3,15 @@ import OpenAI from "openai";
 import { KEYWORD_SCORE_CAP, KEYWORD_WEIGHT, VECTOR_WEIGHT, applyCategoryBoost, compareByHybridThenRecency, extractSnippet, keywordScore, tokenize } from "./searchUtils";
 import { getClientIp, isRateLimited } from "../rateLimit";
 import { supabaseAdmin } from "../supabaseAdmin";
+import { getCachedAnswer, setCachedAnswer } from "./answerCache";
+import { searchRequestSchema } from "../validation";
 
-type HistoryItem = { role: "user" | "bot"; text: string };
 type SupabaseAdmin = ReturnType<typeof supabaseAdmin>;
 
 const SEARCH_RATE_LIMIT = 20;
 const SEARCH_RATE_WINDOW_MS = 60_000;
+// Vercel 함수 최대 실행시간보다 충분히 짧게 잡아, 초과 시 fallbackSnippet으로 넘어가게 한다.
+const GROQ_TIMEOUT_MS = 20_000;
 
 const groq = process.env.GROQ_API_KEY
   ? new OpenAI({ apiKey: process.env.GROQ_API_KEY, baseURL: "https://api.groq.com/openai/v1" })
@@ -52,10 +55,54 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ answer: null, error: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요." }, { status: 429 });
   }
 
-  const { question, history } = (await req.json()) as { question: string; history?: HistoryItem[] };
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ answer: null, error: "잘못된 요청 형식입니다." }, { status: 400 });
+  }
 
-  if (!question?.trim()) {
-    return NextResponse.json({ answer: null });
+  const parsed = searchRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ answer: null, error: "잘못된 요청입니다." }, { status: 400 });
+  }
+  const { question, history } = parsed.data;
+
+  const supabase = supabaseAdmin();
+
+  // 대화 맥락이 없는 첫 질문에 한해 캐시를 사용한다. history가 있으면 이전 대화를 반영한
+  // 답변이라 같은 질문 텍스트라도 문맥에 따라 달라질 수 있어 캐시 대상에서 제외한다.
+  const noHistory = (history ?? []).length === 0;
+  if (noHistory) {
+    const cached = getCachedAnswer(question);
+    if (cached) {
+      const log_id = await logQuery(supabase, {
+        question: question.trim(),
+        answer: cached.answer,
+        source_filename: cached.source,
+        source_category: cached.category,
+        score: cached.score,
+        search_mode: cached.searchMode,
+        was_answered: cached.wasAnswered,
+      });
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            streamMetaLine({
+              type: "meta",
+              source: cached.source,
+              category: cached.category,
+              score: cached.score,
+              searchMode: cached.searchMode,
+              log_id,
+            })
+          );
+          controller.enqueue(new TextEncoder().encode(cached.answer));
+          controller.close();
+        },
+      });
+      return new Response(stream, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    }
   }
 
   // 팔로우업 질문("그럼 서류는 어디서 받아?")이 이전 주제를 이어받도록,
@@ -68,11 +115,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ answer: null });
   }
 
-  const supabase = supabaseAdmin();
+  // 매 요청마다 documents 전체를 훑어 JS에서 키워드 스코어링한다 (searchUtils.keywordScore).
+  // 문서 수가 적을 땐(수백 건) 문제없지만, DB 레벨 필터로 미리 좁히려면 documents.content를
+  // searchUtils.normalize()와 동일한 규칙으로 정규화해 저장하는 컬럼이 먼저 필요하다 —
+  // 그렇지 않으면 한글 음절 사이 공백이 있는 문서가 ILIKE 필터에서 누락되는 회귀가 생긴다.
+  // 문서 수가 수천 건대로 늘어나면 이 지점부터 재검토.
+  const DOC_SCAN_WARN_THRESHOLD = 2000;
 
   const { data: docs, error } = await supabase
     .from("documents")
     .select("id, filename, category, content, created_at");
+
+  if (docs && docs.length > DOC_SCAN_WARN_THRESHOLD) {
+    console.warn(`[search] documents 전체 스캔 중 (${docs.length}건) — DB 레벨 필터링 도입을 검토할 시점`);
+  }
 
   if (error || !docs || docs.length === 0) {
     const log_id = await logQuery(supabase, { question: question.trim(), answer: null, was_answered: false });
@@ -228,15 +284,22 @@ ${question}
       let finalAnswer = fallbackSnippet;
 
       if (groq && contextBlocks) {
+        // Groq가 응답을 물고 늘어지면 사용자가 무한정 "검색 중..." 상태로 기다리게 되므로,
+        // 일정 시간 내 첫 응답이 없으면 중단하고 fallbackSnippet으로 넘어간다.
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => abortController.abort(), GROQ_TIMEOUT_MS);
         try {
           console.log(`[Groq] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
-          const completion = await groq.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.3,
-            max_tokens: 1000,
-            stream: true,
-          });
+          const completion = await groq.chat.completions.create(
+            {
+              model: "llama-3.3-70b-versatile",
+              messages: [{ role: "user", content: prompt }],
+              temperature: 0.3,
+              max_tokens: 1000,
+              stream: true,
+            },
+            { signal: abortController.signal }
+          );
 
           let generated = "";
           for await (const chunk of completion) {
@@ -250,6 +313,18 @@ ${question}
           if (generated) {
             console.log(`[Groq] 답변 생성 성공 (${generated.length}자)`);
             finalAnswer = generated;
+            // 대화 맥락 없이 생성된 정상 답변만 캐싱 — history가 섞인 답변은
+            // 문맥 의존적이라 다른 세션의 같은 질문에 그대로 재사용하면 안 된다.
+            if (noHistory && wasAnswered) {
+              setCachedAnswer(question, {
+                source: best.filename,
+                category: best.category,
+                score: best.hybrid,
+                searchMode,
+                wasAnswered,
+                answer: generated,
+              });
+            }
           } else {
             console.error("[Groq] 답변 생성 실패: 빈 응답, 원문 발췌로 fallback");
             controller.enqueue(encoder.encode(fallbackSnippet));
@@ -257,6 +332,8 @@ ${question}
         } catch (e) {
           console.error("Groq 답변 생성 실패, 원문 발췌로 fallback:", e);
           controller.enqueue(encoder.encode(fallbackSnippet));
+        } finally {
+          clearTimeout(timeoutId);
         }
       } else {
         controller.enqueue(encoder.encode(fallbackSnippet));

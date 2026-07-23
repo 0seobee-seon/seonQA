@@ -4,6 +4,7 @@ import { supabaseAdmin } from "../../supabaseAdmin";
 import { generateEmbedding } from "../embedding";
 import { extractText } from "../extract";
 import { chunkDocument } from "../chunking";
+import { DOCUMENT_CATEGORY } from "../../validation";
 
 const MAX_FILE_BYTES = 15 * 1024 * 1024; // 15MB
 
@@ -13,7 +14,15 @@ export async function POST(req: NextRequest) {
 
   const formData = await req.formData();
   const file = formData.get("file");
-  const category = (formData.get("category") as string | null) ?? "업무매뉴얼";
+  const categoryRaw = formData.get("category");
+  const categoryParsed =
+    categoryRaw === null || categoryRaw === ""
+      ? { success: true as const, data: "업무매뉴얼" as const }
+      : DOCUMENT_CATEGORY.safeParse(categoryRaw);
+  if (!categoryParsed.success) {
+    return NextResponse.json({ error: "잘못된 카테고리입니다." }, { status: 400 });
+  }
+  const category = categoryParsed.data;
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "파일이 없습니다." }, { status: 400 });

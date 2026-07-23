@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkAdminAuth } from "../auth";
 import { supabaseAdmin } from "../../supabaseAdmin";
 import { generateEmbedding } from "../embedding";
+import { qaAnswerSchema } from "../../validation";
 
 // 미응답 질문 목록 조회
 export async function GET(req: NextRequest) {
@@ -26,14 +27,22 @@ export async function POST(req: NextRequest) {
   const authError = checkAdminAuth(req, "qa:answer");
   if (authError) return authError;
 
-  const { question, answer, log_id } = await req.json();
-  if (!question?.trim() || !answer?.trim()) {
-    return NextResponse.json({ error: "질문과 답변을 입력해 주세요." }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
   }
+
+  const parsed = qaAnswerSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "질문과 답변을 확인해 주세요. (답변 5000자 이내)" }, { status: 400 });
+  }
+  const { question, answer, log_id } = parsed.data;
 
   const supabase = supabaseAdmin();
 
-  const content = `[자주 묻는 질문]\n질문: ${question.trim()}\n\n답변: ${answer.trim()}`;
+  const content = `[자주 묻는 질문]\n질문: ${question}\n\n답변: ${answer}`;
 
   // documents 테이블에 삽입
   const { data: doc, error: insertError } = await supabase
