@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { KEYWORD_SCORE_CAP, KEYWORD_WEIGHT, VECTOR_WEIGHT, applyCategoryBoost, compareByHybridThenRecency, extractSnippet, keywordScore, tokenize } from "./searchUtils";
 import { getClientIp, isRateLimited } from "../rateLimit";
 import { supabaseAdmin } from "../supabaseAdmin";
@@ -10,12 +11,35 @@ type SupabaseAdmin = ReturnType<typeof supabaseAdmin>;
 
 const SEARCH_RATE_LIMIT = 20;
 const SEARCH_RATE_WINDOW_MS = 60_000;
-// Vercel 함수 최대 실행시간보다 충분히 짧게 잡아, 초과 시 fallbackSnippet으로 넘어가게 한다.
+// Vercel 함수 최대 실행시간보다 충분히 짧게 잡아, 초과 시 다음 단계(Groq → 발췌)로 넘어가게 한다.
+const GEMINI_TIMEOUT_MS = 12_000;
 const GROQ_TIMEOUT_MS = 20_000;
+
+const genAI = process.env.GOOGLE_AI_API_KEY ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY) : null;
 
 const groq = process.env.GROQ_API_KEY
   ? new OpenAI({ apiKey: process.env.GROQ_API_KEY, baseURL: "https://api.groq.com/openai/v1" })
   : null;
+
+// Gemini는 실패 시 Groq로 폴백해야 하므로, 부분 스트리밍 없이 전체 응답을 모아서 반환한다.
+async function generateWithGemini(prompt: string): Promise<string | null> {
+  if (!genAI) return null;
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), GEMINI_TIMEOUT_MS);
+  try {
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash",
+      generationConfig: { temperature: 0.3, maxOutputTokens: 1000 },
+    });
+    const result = await model.generateContent(prompt, { signal: abortController.signal });
+    return result.response.text() || null;
+  } catch (e) {
+    console.warn("[Gemini] 답변 생성 실패, Groq로 폴백:", e);
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 async function logQuery(
   supabase: SupabaseAdmin,
@@ -289,57 +313,72 @@ ${question}
 
       let finalAnswer = fallbackSnippet;
 
-      if (groq && contextBlocks) {
-        // Groq가 응답을 물고 늘어지면 사용자가 무한정 "검색 중..." 상태로 기다리게 되므로,
-        // 일정 시간 내 첫 응답이 없으면 중단하고 fallbackSnippet으로 넘어간다.
-        const abortController = new AbortController();
-        const timeoutId = setTimeout(() => abortController.abort(), GROQ_TIMEOUT_MS);
-        try {
-          console.log(`[Groq] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
-          const completion = await groq.chat.completions.create(
-            {
-              model: "llama-3.3-70b-versatile",
-              messages: [{ role: "user", content: prompt }],
-              temperature: 0.3,
-              max_tokens: 1000,
-              stream: true,
-            },
-            { signal: abortController.signal }
-          );
+      const cacheAnswer = (answer: string) => {
+        // 대화 맥락 없이 생성된 정상 답변만 캐싱 — history가 섞인 답변은
+        // 문맥 의존적이라 다른 세션의 같은 질문에 그대로 재사용하면 안 된다.
+        if (noHistory && wasAnswered) {
+          setCachedAnswer(question, {
+            source: best.filename,
+            category: best.category,
+            score: best.hybrid,
+            searchMode,
+            wasAnswered,
+            answer,
+          });
+        }
+      };
 
-          let generated = "";
-          for await (const chunk of completion) {
-            const delta = chunk.choices[0]?.delta?.content ?? "";
-            if (delta) {
-              generated += delta;
-              controller.enqueue(encoder.encode(delta));
-            }
-          }
+      if (contextBlocks) {
+        const geminiAnswer = genAI ? await generateWithGemini(prompt) : null;
 
-          if (generated) {
-            console.log(`[Groq] 답변 생성 성공 (${generated.length}자)`);
-            finalAnswer = generated;
-            // 대화 맥락 없이 생성된 정상 답변만 캐싱 — history가 섞인 답변은
-            // 문맥 의존적이라 다른 세션의 같은 질문에 그대로 재사용하면 안 된다.
-            if (noHistory && wasAnswered) {
-              setCachedAnswer(question, {
-                source: best.filename,
-                category: best.category,
-                score: best.hybrid,
-                searchMode,
-                wasAnswered,
-                answer: generated,
-              });
+        if (geminiAnswer) {
+          console.log(`[Gemini] 답변 생성 성공 (${geminiAnswer.length}자)`);
+          finalAnswer = geminiAnswer;
+          controller.enqueue(encoder.encode(geminiAnswer));
+          cacheAnswer(geminiAnswer);
+        } else if (groq) {
+          // Groq가 응답을 물고 늘어지면 사용자가 무한정 "검색 중..." 상태로 기다리게 되므로,
+          // 일정 시간 내 첫 응답이 없으면 중단하고 fallbackSnippet으로 넘어간다.
+          const abortController = new AbortController();
+          const timeoutId = setTimeout(() => abortController.abort(), GROQ_TIMEOUT_MS);
+          try {
+            console.log(`[Groq] contextBlocks ${contextBlocks.length}자, prompt ${prompt.length}자`);
+            const completion = await groq.chat.completions.create(
+              {
+                model: "llama-3.3-70b-versatile",
+                messages: [{ role: "user", content: prompt }],
+                temperature: 0.3,
+                max_tokens: 1000,
+                stream: true,
+              },
+              { signal: abortController.signal }
+            );
+
+            let generated = "";
+            for await (const chunk of completion) {
+              const delta = chunk.choices[0]?.delta?.content ?? "";
+              if (delta) {
+                generated += delta;
+                controller.enqueue(encoder.encode(delta));
+              }
             }
-          } else {
-            console.error("[Groq] 답변 생성 실패: 빈 응답, 원문 발췌로 fallback");
+
+            if (generated) {
+              console.log(`[Groq] 답변 생성 성공 (${generated.length}자)`);
+              finalAnswer = generated;
+              cacheAnswer(generated);
+            } else {
+              console.error("[Groq] 답변 생성 실패: 빈 응답, 원문 발췌로 fallback");
+              controller.enqueue(encoder.encode(fallbackSnippet));
+            }
+          } catch (e) {
+            console.error("Groq 답변 생성 실패, 원문 발췌로 fallback:", e);
             controller.enqueue(encoder.encode(fallbackSnippet));
+          } finally {
+            clearTimeout(timeoutId);
           }
-        } catch (e) {
-          console.error("Groq 답변 생성 실패, 원문 발췌로 fallback:", e);
+        } else {
           controller.enqueue(encoder.encode(fallbackSnippet));
-        } finally {
-          clearTimeout(timeoutId);
         }
       } else {
         controller.enqueue(encoder.encode(fallbackSnippet));
